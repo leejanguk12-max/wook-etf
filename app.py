@@ -311,16 +311,22 @@ st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
 
-# [수정] 깨지는 file_uploader 대신 세션 상태를 활용한 깔끔한 토글형 업로더 구현 (자동 불러오기와 100% 동일한 디자인)
+# [수정] 수동 업로드 모드: 오늘 파일과 어제(직전 영업일) 파일 2개를 각각 업로드할 수 있도록 분리
 if "show_uploader" not in st.session_state:
     st.session_state.show_uploader = False
 
-if st.button("📁 엑셀 파일 수동 업로드하기", use_container_width=True):
+if st.button("📁 엑셀 파일 수동 업로드하기 (오늘 + 어제 파일)", use_container_width=True):
     st.session_state.show_uploader = not st.session_state.show_uploader
 
 uploaded_file = None
+uploaded_file_prev = None
+
 if st.session_state.show_uploader:
-    uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 선택", type=["xlsx", "xls"], label_visibility="collapsed")
+    st.markdown("---")
+    st.markdown("📥 **비중 비교를 위해 2개의 파일을 모두 업로드해주세요.**")
+    uploaded_file = st.file_uploader("1️⃣ **[오늘]** 구성종목 엑셀 파일 (.xlsx)", type=["xlsx", "xls"], key="today")
+    uploaded_file_prev = st.file_uploader("2️⃣ **[어제 / 직전 영업일]** 구성종목 엑셀 파일 (.xlsx)", type=["xlsx", "xls"], key="yesterday")
+    st.markdown("---")
 
 df_input = None
 df_prev = None
@@ -344,11 +350,13 @@ if fetch_auto:
 elif uploaded_file is not None:
     try:
         df_input = pd.read_excel(uploaded_file)
+        if uploaded_file_prev is not None:
+            df_prev = pd.read_excel(uploaded_file_prev)
     except Exception as e:
         st.error(f"엑셀을 읽는 중 오류 발생: {e}")
 
 if df_input is not None and not df_input.empty:
-    date_info_msg = f" ({current_pdf_date_str} vs 전일: {prev_pdf_date_str})" if current_pdf_date_str and prev_pdf_date_str else ""
+    date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
     st.success(f"✅ 총 {len(df_input)}개 종목 데이터 로드 완료!{date_info_msg}")
     
     ticker_col = "종목코드"
@@ -366,10 +374,20 @@ if df_input is not None and not df_input.empty:
         
         prev_weight_map = {}
         if df_prev is not None and not df_prev.empty:
+            # 어제 파일의 컬럼명 자동 탐색
+            p_ticker_col = "종목코드"
+            p_weight_col = "비중"
+            for col in df_prev.columns:
+                col_str = str(col)
+                if "코드" in col_str or "티커" in col_str or "Symbol" in col_str:
+                    p_ticker_col = col
+                if "비중" in col_str or "평가" in col_str or "Weight" in col_str:
+                    p_weight_col = col
+
             for _, p_row in df_prev.iterrows():
-                p_code = str(p_row['종목코드']).strip().upper()
+                p_code = str(p_row[p_ticker_col]).split()[0].strip().upper()
                 try:
-                    p_w = float(str(p_row['비중']).replace('%', '').replace(',', '').strip())
+                    p_w = float(str(p_row[p_weight_col]).replace('%', '').replace(',', '').strip())
                     prev_weight_map[p_code] = p_w
                 except ValueError:
                     pass

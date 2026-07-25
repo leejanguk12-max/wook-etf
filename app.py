@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 import plotly.express as px
 
-st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
+st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
 st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
 st.markdown("타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**, **실시간 기준가**를 연동합니다.")
@@ -33,7 +33,7 @@ def get_prev_business_day(ref_date):
         prev_day = ref_date - timedelta(days=1)
     return prev_day.strftime("%Y-%m-%d")
 
-# 특정 날짜(date_str)의 타임폴리오 구성종목 및 공시 기준일자 정밀 수집
+# 특정 날짜(date_str)의 타임폴리오 구성종목 및 공시 기준일자 정밀 수집 (현금 평가금액 포함)
 def get_timefolio_constituents_by_date(idx=2, date_str=None):
     if date_str:
         url = f"https://timeetf.co.kr/m11_view.php?idx={idx}&pdfDate={date_str}#constituentItems"
@@ -79,15 +79,32 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
                 raw_name = cols[1] if len(cols) > 1 else ""
                 raw_weight = cols[-1] if len(cols) > 0 else ""
                 
+                # 평가금액(원) 컬럼 파싱 시도 (보통 뒤에서 두 번째나 세 번째에 위치)
+                amt_val = 0.0
+                for col_text in cols[1:-1]:
+                    clean_txt = col_text.replace(',', '').strip()
+                    if clean_txt.replace('.', '', 1).isdigit() and float(clean_txt) > 1000:
+                        try:
+                            amt_val = float(clean_txt)
+                            break
+                        except ValueError:
+                            pass
+                
                 clean_ticker = ""
                 
-                if "현금" in raw_name or "현금" in raw_code or "CASH" in raw_name.upper() or "USD" in raw_name.upper():
-                    clean_ticker = "USD (현금)"
+                if "현금" in raw_name or "예금" in raw_name or "현금" in raw_code or "CASH" in raw_name.upper() or "KRW" in raw_name.upper():
+                    clean_ticker = "KRW"
                 else:
                     code_parts = raw_code.split()
                     if code_parts:
                         clean_ticker = code_parts[0].strip().upper()
                 
+                if not clean_ticker or clean_ticker == "NAN" or clean_ticker == "NONE":
+                    if "현금" in raw_name or "예금" in raw_name:
+                        clean_ticker = "KRW"
+                    else:
+                        continue
+
                 if any(kw == clean_ticker or kw in raw_code or kw in raw_name for kw in exclude_keywords):
                     continue
                     
@@ -101,7 +118,8 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
                     if 0 < weight_val <= 100:
                         data.append({
                             "종목코드": clean_ticker,
-                            "비중": weight_val
+                            "비중": weight_val,
+                            "평가금액": amt_val
                         })
                 except ValueError:
                     pass
@@ -219,7 +237,7 @@ def get_tradingview_direct_prices(symbols):
         sym_str = str(s).split()[0].upper().replace("/", ".")
         if "NQU" in sym_str or "NQ1!" in sym_str or "NQ=" in sym_str:
             clean_symbols.append("QQQ")
-        elif "현금" not in sym_str and "CASH" not in sym_str and "KRW" not in sym_str and "USD" not in sym_str:
+        elif sym_str != "KRW" and "현금" not in sym_str and "CASH" not in sym_str and "KRW" not in sym_str:
             clean_symbols.append(sym_str)
             
     clean_symbols = list(set(clean_symbols))
@@ -311,7 +329,6 @@ st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
 
-# [수정] 수동 업로드 모드: 오늘 파일과 어제(직전 영업일) 파일 2개를 각각 업로드할 수 있도록 분리
 if "show_uploader" not in st.session_state:
     st.session_state.show_uploader = False
 
@@ -349,9 +366,78 @@ if fetch_auto:
 
 elif uploaded_file is not None:
     try:
-        df_input = pd.read_excel(uploaded_file)
+        # [오늘 파일 읽기]
+        raw_df_in = pd.read_excel(uploaded_file)
+        in_t_col, in_w_col, in_n_col, in_a_col = "종목코드", "비중", "종목명", "평가금액(원)"
+        for col in raw_df_in.columns:
+            c_str = str(col)
+            if "코드" in c_str or "티커" in c_str or "Symbol" in c_str:
+                in_t_col = col
+            if "비중" in c_str or "평가" in c_str or "Weight" in c_str:
+                in_w_col = col
+            if "명" in c_str or "Name" in c_str:
+                in_n_col = col
+            if "금액" in c_str or "평가" in c_str or "Amount" in c_str:
+                in_a_col = col
+        
+        clean_in_data = []
+        for _, r in raw_df_in.iterrows():
+            t_val = str(r[in_t_col]).split()[0].strip().upper() if pd.notna(r[in_t_col]) else ""
+            n_val = str(r[in_n_col]) if in_n_col in raw_df_in.columns and pd.notna(r[in_n_col]) else ""
+            w_val_raw = str(r[in_w_col]).replace('%', '').replace(',', '').strip() if pd.notna(r[in_w_col]) else "0"
+            
+            amt_val = 0.0
+            if in_a_col in raw_df_in.columns and pd.notna(r[in_a_col]):
+                try:
+                    amt_val = float(str(r[in_a_col]).replace(',', '').strip())
+                except ValueError:
+                    pass
+            
+            if "현금" in n_val or "예금" in n_val or t_val == "NAN" or not t_val:
+                t_val = "KRW"
+            
+            if t_val == "NAN" or t_val == "NONE" or t_val == "열1":
+                continue
+            
+            try:
+                w_val = float(w_val_raw)
+                clean_in_data.append({"종목코드": t_val, "비중": w_val, "평가금액": amt_val})
+            except ValueError:
+                pass
+        df_input = pd.DataFrame(clean_in_data).drop_duplicates(subset=["종목코드"]).reset_index(drop=True)
+
+        # [어제 파일 읽기]
         if uploaded_file_prev is not None:
-            df_prev = pd.read_excel(uploaded_file_prev)
+            raw_df_prev = pd.read_excel(uploaded_file_prev)
+            p_t_col, p_w_col, p_n_col = "종목코드", "비중", "종목명"
+            for col in raw_df_prev.columns:
+                c_str = str(col)
+                if "코드" in c_str or "티커" in c_str or "Symbol" in c_str:
+                    p_t_col = col
+                if "비중" in c_str or "평가" in c_str or "Weight" in c_str:
+                    p_w_col = col
+                if "명" in c_str or "Name" in c_str:
+                    p_n_col = col
+            
+            clean_prev_data = []
+            for _, r in raw_df_prev.iterrows():
+                t_val = str(r[p_t_col]).split()[0].strip().upper() if pd.notna(r[p_t_col]) else ""
+                n_val = str(r[p_n_col]) if p_n_col in raw_df_prev.columns and pd.notna(r[p_n_col]) else ""
+                w_val_raw = str(r[p_w_col]).replace('%', '').replace(',', '').strip() if pd.notna(r[p_w_col]) else "0"
+                
+                if "현금" in n_val or "예금" in n_val or t_val == "NAN" or not t_val:
+                    t_val = "KRW"
+                
+                if t_val == "NAN" or t_val == "NONE" or t_val == "열1":
+                    continue
+                
+                try:
+                    w_val = float(w_val_raw)
+                    clean_prev_data.append({"종목코드": t_val, "비중": w_val})
+                except ValueError:
+                    pass
+            df_prev = pd.DataFrame(clean_prev_data).drop_duplicates(subset=["종목코드"]).reset_index(drop=True)
+
     except Exception as e:
         st.error(f"엑셀을 읽는 중 오류 발생: {e}")
 
@@ -361,33 +447,16 @@ if df_input is not None and not df_input.empty:
     
     ticker_col = "종목코드"
     weight_col = "비중"
-    
-    for col in df_input.columns:
-        col_str = str(col)
-        if "코드" in col_str or "티커" in col_str or "Symbol" in col_str:
-            ticker_col = col
-        if "비중" in col_str or "평가" in col_str or "Weight" in col_str:
-            weight_col = col
             
     with st.spinner("실시간 시세 연산 중..."):
         clean_df = df_input.dropna(subset=[ticker_col, weight_col]).copy()
         
         prev_weight_map = {}
         if df_prev is not None and not df_prev.empty:
-            # 어제 파일의 컬럼명 자동 탐색
-            p_ticker_col = "종목코드"
-            p_weight_col = "비중"
-            for col in df_prev.columns:
-                col_str = str(col)
-                if "코드" in col_str or "티커" in col_str or "Symbol" in col_str:
-                    p_ticker_col = col
-                if "비중" in col_str or "평가" in col_str or "Weight" in col_str:
-                    p_weight_col = col
-
             for _, p_row in df_prev.iterrows():
-                p_code = str(p_row[p_ticker_col]).split()[0].strip().upper()
+                p_code = str(p_row['종목코드']).strip().upper()
                 try:
-                    p_w = float(str(p_row[p_weight_col]).replace('%', '').replace(',', '').strip())
+                    p_w = float(str(p_row['비중']).replace('%', '').replace(',', '').strip())
                     prev_weight_map[p_code] = p_w
                 except ValueError:
                     pass
@@ -411,7 +480,7 @@ if df_input is not None and not df_input.empty:
         failed_tickers = []
         new_added_stocks = []
         
-        cash_keywords = ["USD", "CASH", "KRW", "현금", "원화", "달러", "예금"]
+        cash_keywords = ["KRW", "CASH", "현금", "원화", "달러", "예금"]
         
         for index, row in clean_df.iterrows():
             raw_ticker = str(row[ticker_col]).strip()
@@ -424,7 +493,7 @@ if df_input is not None and not df_input.empty:
             
             prev_w = prev_weight_map.get(ticker, None)
             if prev_w is None and any(kw in ticker for kw in cash_keywords):
-                prev_w = prev_weight_map.get("USD (현금)", None)
+                prev_w = prev_weight_map.get("KRW", None)
                 
             w_diff_val = 0.0
             if prev_w is not None:
@@ -441,10 +510,11 @@ if df_input is not None and not df_input.empty:
                 w_diff_val = weight
                 new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
             
-            if any(kw in ticker for kw in cash_keywords):
+            if any(kw in ticker for kw in cash_keywords) or ticker == "KRW":
+                krw_amount = row.get("평가금액", 0.0) if "평가금액" in row and row["평가금액"] > 0 else 1.0
                 live_data.append({
-                    "종목코드": "USD (현금)", 
-                    "TradingView실시간가($)": 1.0, 
+                    "종목코드": "KRW", 
+                    "실시간 가격($)": krw_amount, 
                     "주가변동률(%)": 0.0, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
@@ -455,7 +525,7 @@ if df_input is not None and not df_input.empty:
                 qqq_price, qqq_change = batch_results.get("QQQ", (0.0, 0.0))
                 live_data.append({
                     "종목코드": f"{ticker} (QQQ대체)", 
-                    "TradingView실시간가($)": qqq_price, 
+                    "실시간 가격($)": qqq_price, 
                     "주가변동률(%)": qqq_change, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
@@ -466,7 +536,7 @@ if df_input is not None and not df_input.empty:
                 live_price, stock_change_pct = batch_results[ticker]
                 live_data.append({
                     "종목코드": ticker, 
-                    "TradingView실시간가($)": live_price, 
+                    "실시간 가격($)": live_price, 
                     "주가변동률(%)": stock_change_pct, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
@@ -477,7 +547,7 @@ if df_input is not None and not df_input.empty:
                 failed_tickers.append(ticker)
                 live_data.append({
                     "종목코드": ticker, 
-                    "TradingView실시간가($)": 0.0, 
+                    "실시간 가격($)": 0.0, 
                     "주가변동률(%)": 0.0, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
@@ -489,17 +559,8 @@ if df_input is not None and not df_input.empty:
         removed_stocks = []
         if df_prev is not None and not df_prev.empty:
             for p_code, p_w in prev_weight_map.items():
-                if p_code not in curr_tickers and "현금" not in p_code:
+                if p_code not in curr_tickers and p_code != "KRW":
                     removed_stocks.append(f"**{p_code}** (전일 {p_w:.2f}%)")
-                    live_data.append({
-                        "종목코드": p_code,
-                        "TradingView실시간가($)": 0.0,
-                        "주가변동률(%)": 0.0,
-                        "당일비중(%)": 0.0,
-                        "전일비중(%)": f"{p_w:.2f}%",
-                        "비중변화(%p)": "🚪 OUT",
-                        "비중변화_수치": -p_w
-                    })
 
         result_df = pd.DataFrame(live_data)
         
@@ -626,12 +687,12 @@ if df_input is not None and not df_input.empty:
         st.dataframe(styled_top10, use_container_width=True, height=385)
 
         # =========================================================
-        # 📊 3. TradingView 종목별 실시간 전체 현황 표
+        # 📊 3. 종목별 실시간 전체 현황 표 (KRW 가격 뒤에 (원) 붙임)
         # =========================================================
         st.markdown("---")
-        st.markdown("### 📊 TradingView 종목별 실시간 전체 현황")
+        st.markdown("### 📊 종목별 실시간 전체 현황")
         
-        display_full_df = result_df.drop(columns=['비중변화_수치'], errors='ignore').reset_index(drop=True)
+        display_full_df = result_df[result_df['당일비중(%)'] > 0].drop(columns=['비중변화_수치'], errors='ignore').reset_index(drop=True)
         display_full_df.index = range(1, len(display_full_df) + 1)
         
         stiler_full = display_full_df.style
@@ -641,8 +702,25 @@ if df_input is not None and not df_input.empty:
         else:
             styled_full = stiler_full.applymap(color_change_pct, subset=['주가변동률(%)']).applymap(color_weight_change, subset=['비중변화(%p)'])
             
+        # KRW 행인 경우 숫자 뒤에 (원)을 붙여서 포맷팅
+        def format_price_col(row):
+            val = row['실시간 가격($)']
+            code = row['종목코드']
+            if code == "KRW":
+                return f"{val:,.0f} (원)"
+            elif val > 10:
+                return f"{val:,.2f}"
+            else:
+                return f"{val:,.2f}"
+
+        # 포맷팅 적용을 위해 새로운 표시용 컬럼 생성
+        display_full_df['실시간 가격(표시용)'] = display_full_df.apply(format_price_col, axis=1)
+        display_full_df = display_full_df[['종목코드', '실시간 가격(표시용)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']]
+        display_full_df.columns = ['종목코드', '실시간 가격($)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']
+
+        styled_full = display_full_df.style.map(color_change_pct, subset=['주가변동률(%)']).map(color_weight_change, subset=['비중변화(%p)']) if hasattr(display_full_df.style, "map") else display_full_df.style.applymap(color_change_pct, subset=['주가변동률(%)']).applymap(color_weight_change, subset=['비중변화(%p)'])
+
         styled_full = styled_full.format({
-            'TradingView실시간가($)': '{:,.2f}',
             '주가변동률(%)': '{:+.2f}',
             '당일비중(%)': '{:.2f}%'
         }).set_properties(**{'text-align': 'center'})

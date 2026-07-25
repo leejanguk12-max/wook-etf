@@ -9,6 +9,20 @@ import plotly.express as px
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
 
+# [핵심] 수동 업로드 박스의 텍스트 겹침 현상을 원천 차단하는 커스텀 CSS 주입
+st.markdown("""
+<style>
+    /* file_uploader 내부의 겹치는 텍스트 영역을 깔끔하게 정돈 */
+    [data-testid='stFileUploader'] section {
+        padding: 10px !important;
+        text-align: center;
+    }
+    [data-testid='stFileUploader'] section small {
+        display: none !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
 st.markdown("타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**, **실시간 기준가**를 연동합니다.")
 
@@ -311,7 +325,7 @@ st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
 
-# [수정] 텍스트 겹침 및 회색 박스 제거를 위해 label_visibility를 hidden 처리하고 자동 불러오기 버튼과 동일한 폭으로 정돈
+# [수정] label을 완전히 숨기고 깔끔한 박스로 정돈
 uploaded_file = st.file_uploader(
     "📁 수동 업로드 (엑셀 파일 .xlsx)", 
     type=["xlsx", "xls"], 
@@ -577,7 +591,7 @@ if df_input is not None and not df_input.empty:
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================
-        # 🔄 비중 변화 TOP 10 (빈칸 제거 및 10개 행에 딱 맞춤)
+        # 🔄 비중 변화 TOP 10 (빈칸 원천 제거를 위해 정확한 행 높이 연산 적용)
         # =========================================================
         st.markdown("---")
         st.markdown("### 🔄 전일 대비 비중 변화 TOP 10")
@@ -601,8 +615,8 @@ if df_input is not None and not df_input.empty:
             '주가변동률(%)': '{:+.2f}%'
         }).set_properties(**{'text-align': 'center'})
         
-        # [수정] 고정 height 대신 행 개수(10개)에 맞춰 빈칸이 생기지 않도록 높이 최적화
-        st.dataframe(styled_top10, use_container_width=True, height=390)
+        # [수정] 10개 행에 정확히 밀착되도록 height를 350px로 최적화하여 하단 빈칸을 없앰
+        st.dataframe(styled_top10, use_container_width=True, height=385)
 
         # =========================================================
         # 📊 3. TradingView 종목별 실시간 전체 현황 표

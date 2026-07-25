@@ -383,126 +383,35 @@ def color_weight_change(val):
         pass
     return ''
 
-# 메인 UI
-st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
-
-fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
-
+# 메인 UI (접속 시 자동 실행되도록 설정)
 if "show_uploader" not in st.session_state:
     st.session_state.show_uploader = False
 
-if st.button("📁 엑셀 파일 수동 업로드하기 (오늘 + 어제 파일)", use_container_width=True):
-    st.session_state.show_uploader = not st.session_state.show_uploader
-
 uploaded_file = None
 uploaded_file_prev = None
-
-if st.session_state.show_uploader:
-    st.markdown("---")
-    st.markdown("📥 **비중 비교를 위해 2개의 파일을 모두 업로드해주세요.**")
-    uploaded_file = st.file_uploader("1️⃣ **[오늘]** 구성종목 엑셀 파일 (.xlsx)", type=["xlsx", "xls"], key="today")
-    uploaded_file_prev = st.file_uploader("2️⃣ **[어제 / 직전 영업일]** 구성종목 엑셀 파일 (.xlsx)", type=["xlsx", "xls"], key="yesterday")
-    st.markdown("---")
 
 df_input = None
 df_prev = None
 current_pdf_date_str = ""
 prev_pdf_date_str = ""
 
-if fetch_auto:
-    with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
-        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
+# 앱 실행 시 자동으로 타임폴리오 웹에서 데이터를 가져옴
+with st.spinner("타임폴리오 웹사이트에서 최신 구성종목 자동 수집 중..."):
+    df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
+    
+    if fetched_date:
+        current_pdf_date_str = fetched_date
+    else:
+        current_pdf_date_str = "2026-07-24"
         
-        if fetched_date:
-            current_pdf_date_str = fetched_date
-        else:
-            current_pdf_date_str = "2026-07-24"
-            
-        curr_dt = datetime.strptime(current_pdf_date_str, "%Y-%m-%d")
-        prev_pdf_date_str = get_prev_business_day(curr_dt)
-            
-        df_prev, _ = get_timefolio_constituents_by_date(idx=2, date_str=prev_pdf_date_str)
-
-elif uploaded_file is not None:
-    try:
-        # [오늘 파일 읽기]
-        raw_df_in = pd.read_excel(uploaded_file)
-        in_t_col, in_w_col, in_n_col, in_a_col = "종목코드", "비중", "종목명", "평가금액(원)"
-        for col in raw_df_in.columns:
-            c_str = str(col)
-            if "코드" in c_str or "티커" in c_str or "Symbol" in c_str:
-                in_t_col = col
-            if "비중" in c_str or "평가" in c_str or "Weight" in c_str:
-                in_w_col = col
-            if "명" in c_str or "Name" in c_str:
-                in_n_col = col
-            if "금액" in c_str or "평가" in c_str or "Amount" in c_str:
-                in_a_col = col
+    curr_dt = datetime.strptime(current_pdf_date_str, "%Y-%m-%d")
+    prev_pdf_date_str = get_prev_business_day(curr_dt)
         
-        clean_in_data = []
-        for _, r in raw_df_in.iterrows():
-            t_val = str(r[in_t_col]).split()[0].strip().upper() if pd.notna(r[in_t_col]) else ""
-            n_val = str(r[in_n_col]) if in_n_col in raw_df_in.columns and pd.notna(r[in_n_col]) else ""
-            w_val_raw = str(r[in_w_col]).replace('%', '').replace(',', '').strip() if pd.notna(r[in_w_col]) else "0"
-            
-            amt_val = 0.0
-            if in_a_col in raw_df_in.columns and pd.notna(r[in_a_col]):
-                try:
-                    amt_val = float(str(r[in_a_col]).replace(',', '').strip())
-                except ValueError:
-                    pass
-            
-            if "현금" in n_val or "예금" in n_val or t_val == "NAN" or not t_val or t_val == "KRW":
-                t_val = "현금"
-            
-            if t_val == "NAN" or t_val == "NONE" or t_val == "열1":
-                continue
-            
-            try:
-                w_val = float(w_val_raw)
-                clean_in_data.append({"종목코드": t_val, "비중": w_val, "평가금액": amt_val})
-            except ValueError:
-                pass
-        df_input = pd.DataFrame(clean_in_data).drop_duplicates(subset=["종목코드"]).reset_index(drop=True)
-
-        # [어제 파일 읽기]
-        if uploaded_file_prev is not None:
-            raw_df_prev = pd.read_excel(uploaded_file_prev)
-            p_t_col, p_w_col, p_n_col = "종목코드", "비중", "종목명"
-            for col in raw_df_prev.columns:
-                c_str = str(col)
-                if "코드" in c_str or "티커" in c_str or "Symbol" in c_str:
-                    p_t_col = col
-                if "비중" in c_str or "평가" in c_str or "Weight" in c_str:
-                    p_w_col = col
-                if "명" in c_str or "Name" in c_str:
-                    p_n_col = col
-            
-            clean_prev_data = []
-            for _, r in raw_df_prev.iterrows():
-                t_val = str(r[p_t_col]).split()[0].strip().upper() if pd.notna(r[p_t_col]) else ""
-                n_val = str(r[p_n_col]) if p_n_col in raw_df_prev.columns and pd.notna(r[p_n_col]) else ""
-                w_val_raw = str(r[p_w_col]).replace('%', '').replace(',', '').strip() if pd.notna(r[p_w_col]) else "0"
-                
-                if "현금" in n_val or "예금" in n_val or t_val == "NAN" or not t_val or t_val == "KRW":
-                    t_val = "현금"
-                
-                if t_val == "NAN" or t_val == "NONE" or t_val == "열1":
-                    continue
-                
-                try:
-                    w_val = float(w_val_raw)
-                    clean_prev_data.append({"종목코드": t_val, "비중": w_val})
-                except ValueError:
-                    pass
-            df_prev = pd.DataFrame(clean_prev_data).drop_duplicates(subset=["종목코드"]).reset_index(drop=True)
-
-    except Exception as e:
-        st.error(f"엑셀을 읽는 중 오류 발생: {e}")
+    df_prev, _ = get_timefolio_constituents_by_date(idx=2, date_str=prev_pdf_date_str)
 
 if df_input is not None and not df_input.empty:
     date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
-    st.success(f"✅ 총 {len(df_input)}개 종목 데이터 로드 완료!{date_info_msg}")
+    st.success(f"✅ 총 {len(df_input)}개 종목 데이터 자동 로드 완료!{date_info_msg}")
     
     ticker_col = "종목코드"
     weight_col = "비중"
@@ -665,7 +574,7 @@ if df_input is not None and not df_input.empty:
             total_inav_change = 0.0
         
         # =========================================================
-        # 🏷️ 상단 현재가격 카드 (현재가격 옆 퍼센트 배경색 적용: +면 연한 빨간색, -면 연한 하늘색)
+        # 🏷️ 상단 현재가격 카드
         # =========================================================
         current_etf_price = naver_market["current_price"] if naver_market["current_price"] > 0 else 0.0
         price_change_pct = naver_market["price_change_pct"]
@@ -677,7 +586,6 @@ if df_input is not None and not df_input.empty:
             pct_bg = "#ffebee" if pct_is_plus else "#e3f2fd"
             pct_txt_color = "#c62828" if pct_is_plus else "#0277bd"
             
-            # % 퍼센트 부분에 배경색 알약 스타일 적용 (+면 연한 빨간색, -면 연한 하늘색)
             chg_str = (
                 f"<span style='background-color: {pct_bg}; color: {pct_txt_color}; "
                 f"padding: 2px 8px; border-radius: 12px; font-size: 20px; font-weight: normal; display: inline-block;'>"
@@ -701,7 +609,7 @@ if df_input is not None and not df_input.empty:
             disparity_badge = (
                 f"<div style='display: inline-block; background-color: {disp_bg}; color: {disp_txt_color}; "
                 f"padding: 2px 8px; border-radius: 12px; font-size: 14px; font-weight: 500; margin-top: 6px;'>"
-                f"{disp_arrow} 실시간 괴리율: {naver_disp:+.2f}% {f'(NAV: {naver_nav:,.0f}원 기준)' if naver_nav > 0 else ''}"
+                f"{disp_arrow} 실시간 괴리율: {naver_disp:+.2f}% {f'(NAV: {naver_nav:,.0f}원 기준)' if nav_nav > 0 else ''}"
                 f"</div>"
             )
             st.markdown(disparity_badge, unsafe_allow_html=True)

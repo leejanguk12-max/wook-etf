@@ -7,16 +7,17 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 import plotly.express as px
 
+# 모바일 화면 대응을 위해 layout="centered" 또는 wide 유지하되 세로 스택형으로 구성
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
 
-st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드 (TradingView)")
-st.markdown("타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**, 그리고 **실시간 기준가**를 자동으로 연동하여 산출합니다.")
+st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
+st.markdown("타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**, **실시간 기준가**를 연동합니다.")
 
 # 1. 타임폴리오 사이트 바로가기 버튼 (상단배치)
 st.link_button(
     "🔗 타임폴리오 공식 구성종목 페이지 바로가기", 
     "https://timeetf.co.kr/m11_view.php?idx=2#constituentItems",
-    use_container_width=False
+    use_container_width=True
 )
 
 st.markdown("---")
@@ -309,7 +310,7 @@ def color_weight_change(val):
 # 메인 UI
 st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
-col_btn1, col_btn2, col_empty = st.columns([1.5, 1.5, 7])
+col_btn1, col_btn2, col_empty = st.columns([2, 2, 6])
 
 uploaded_file = None
 fetch_auto = False
@@ -327,7 +328,7 @@ current_pdf_date_str = ""
 prev_pdf_date_str = ""
 
 if fetch_auto:
-    with st.spinner("타임폴리오 웹사이트에서 최신 및 직전 영업일 구성종목(PDF)을 수집 중입니다..."):
+    with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
         df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
         
         if fetched_date:
@@ -347,8 +348,8 @@ elif uploaded_file is not None:
         st.error(f"엑셀을 읽는 중 오류 발생: {e}")
 
 if df_input is not None and not df_input.empty:
-    date_info_msg = f" (최신 공시일: {current_pdf_date_str} vs 전일: {prev_pdf_date_str})" if current_pdf_date_str and prev_pdf_date_str else ""
-    st.success(f"✅ 총 {len(df_input)}개의 종목(현금 포함) 데이터를 정확히 읽었습니다!{date_info_msg}")
+    date_info_msg = f" ({current_pdf_date_str} vs 전일: {prev_pdf_date_str})" if current_pdf_date_str and prev_pdf_date_str else ""
+    st.success(f"✅ 총 {len(df_input)}개 종목 데이터 로드 완료!{date_info_msg}")
     
     ticker_col = "종목코드"
     weight_col = "비중"
@@ -360,7 +361,7 @@ if df_input is not None and not df_input.empty:
         if "비중" in col_str or "평가" in col_str or "Weight" in col_str:
             weight_col = col
             
-    with st.spinner("타임폴리오 공식 데이터 및 실시간 시세 연산 중..."):
+    with st.spinner("실시간 시세 연산 중..."):
         clean_df = df_input.dropna(subset=[ticker_col, weight_col]).copy()
         
         prev_weight_map = {}
@@ -494,49 +495,32 @@ if df_input is not None and not df_input.empty:
             fx_inav_change = 0.0
             total_inav_change = 0.0
         
-        # 상단 2열 레이아웃 카드 구성
-        metric_col1, metric_col2 = st.columns(2)
-        
-        with metric_col1:
-            st.metric(
-                label="📈 실시간 iNAV 추정 총 변동률 [3번 = 1번 + 2번]", 
-                value=f"{total_inav_change:+.2f}%", 
-                delta=f"1.주가 변동({stock_inav_change:+.2f}%) + 2.환율 변동({fx_inav_change:+.2f}%)"
-            )
+        # 상단 요약 카드 (모바일에서도 가로로 쪼개지지 않고 깔끔하게 위아래로 쌓이도록 함)
+        st.metric(
+            label="📈 실시간 iNAV 추정 총 변동률", 
+            value=f"{total_inav_change:+.2f}%", 
+            delta=f"주가 변동({stock_inav_change:+.2f}%) + 환율 변동({fx_inav_change:+.2f}%)"
+        )
             
-        with metric_col2:
-            if etf_prev_close > 0:
-                estimated_inav_price = etf_prev_close * (1 + (total_inav_change / 100))
-                price_diff = estimated_inav_price - etf_prev_close
-                st.metric(
-                    label="💵 TIMEFOLIO 미국나스닥100액티브 (426030) 예상 iNAV", 
-                    value=f"{estimated_inav_price:,.0f} 원", 
-                    delta=f"{price_diff:+,.0f} 원 (직전 종가: {etf_prev_close:,.0f}원 기준)"
-                )
-            else:
-                st.metric(label="💵 TIMEFOLIO 미국나스닥100액티브 예상 iNAV", value="종가 수집 불가")
+        if etf_prev_close > 0:
+            estimated_inav_price = etf_prev_close * (1 + (total_inav_change / 100))
+            price_diff = estimated_inav_price - etf_prev_close
+            st.metric(
+                label="💵 나스닥100액티브(426030) 예상 iNAV", 
+                value=f"{estimated_inav_price:,.0f} 원", 
+                delta=f"{price_diff:+,.0f} 원 (종가: {etf_prev_close:,.0f}원)"
+            )
         
         # 타임폴리오 공식 홈페이지 정보 카드
         if timefolio_data["live_nav"] > 0 or timefolio_data["base_nav"] > 0:
-            live_nav_str = f"**{timefolio_data['live_nav']:,.2f}원**" if timefolio_data['live_nav'] > 0 else "**수집 대기 중**"
-            base_nav_str = f"**{timefolio_data['base_nav']:,.2f}원**" if timefolio_data['base_nav'] > 0 else "**수집 대기 중**"
-            
-            time_info = f" ({timefolio_data['live_time']} 기준)" if timefolio_data['live_time'] else ""
-            date_info = f" ({timefolio_data['base_date']} 기준)" if timefolio_data['base_date'] else ""
+            live_nav_str = f"**{timefolio_data['live_nav']:,.2f}원**" if timefolio_data['live_nav'] > 0 else "대기 중"
+            base_nav_str = f"**{timefolio_data['base_nav']:,.2f}원**" if timefolio_data['base_nav'] > 0 else "대기 중"
             
             st.success(
-                f"🏛️ **타임폴리오 공식 홈페이지 공시 정보**  \n"
-                f"- 실시간 기준가: {live_nav_str}{time_info}  \n"
-                f"- 전일 확정 기준가: {base_nav_str}{date_info}"
+                f"🏛️ **공식 공시 기준가**  \n"
+                f"- 실시간: {live_nav_str}  \n"
+                f"- 전일 확정: {base_nav_str}"
             )
-        
-        # 환율 상세 박스
-        st.info(
-            f"💵 **서울외환시장 공식 마감가 기준 환율 보정 완료**  \n"
-            f"- 트레이딩뷰 실시간 환율: **{live_fx:,.2f}원**  \n"
-            f"- 서울외환시장 마감 기준 환율(네이버금융): **{official_base_fx:,.2f}원**  \n"
-            f"- 한국 장 마감 대비 환율 변동률: **{usdkrw_change_pct:+.2f}%**"
-        )
         
         # 신규 편입 / 편출(삭제) 종목 요약 카드 박스
         if new_added_stocks or removed_stocks:
@@ -544,87 +528,80 @@ if df_input is not None and not df_input.empty:
             out_msg = f"🚪 **편출 (전량 매도)**: {', '.join(removed_stocks)}" if removed_stocks else "🚪 **편출 (전량 매도)**: 없음"
             st.warning(f"📋 **포트폴리오 변동 내역**  \n- {new_msg}  \n- {out_msg}")
 
-        if failed_tickers:
-            st.warning(f"⚠️ 시세를 불러오지 못한 티커: {', '.join(set(failed_tickers))}")
-
         # =========================================================
-        # 🔥 전체 종목 히트맵 & TOP 20 표 (열 순서 변경 및 완벽 가운데 정렬)
+        # 🔥 [모바일 최적화 세로 스택 레이아웃] 히트맵 & TOP 20 표
         # =========================================================
         st.markdown("---")
         
-        col_viz1, col_viz2 = st.columns([2.2, 2.8])
+        # 1. 🔥 전체 구성종목 히트맵 (모바일 세로 폭 전체 사용)
+        active_df = result_df[result_df['당일비중(%)'] > 0].copy()
+        st.markdown(f"### 🔥 전체 구성종목 ({len(active_df)}개) 히트맵")
         
-        with col_viz1:
-            active_df = result_df[result_df['당일비중(%)'] > 0].copy()
-            st.markdown(f"### 🔥 전체 구성종목 ({len(active_df)}개) 주가 상승/하락 히트맵")
-            
-            all_df = active_df.sort_values(by="당일비중(%)", ascending=False).copy()
-            
-            all_df['표시명'] = (
-                "<span style='font-size:22px; font-weight:bold;'>" + all_df['종목코드'] + "</span><br>" +
-                "<span style='font-size:16px;'>" + all_df['주가변동률(%)'].map('{:+.2f}%'.format) + "</span>"
-            )
-            
-            fig_treemap = px.treemap(
-                all_df,
-                path=['표시명'],
-                values='당일비중(%)',
-                color='주가변동률(%)',
-                color_continuous_scale=[
-                    [0.0, '#4285F4'],   # -3% 이하 (밝은 파랑)
-                    [0.166, '#3B72E2'], # -2%
-                    [0.333, '#345FCF'], # -1%
-                    [0.5, '#404552'],   # 0% (어두운 회색)
-                    [0.666, '#8B3A48'], # +1%
-                    [0.833, '#C83742'], # +2%
-                    [1.0, '#FF1744']    # +3% 이상 (선명한 빨강)
-                ],
-                range_color=[-3.0, 3.0]
-            )
-            
-            fig_treemap.update_traces(
-                textposition="middle center",
-                selector=dict(type='treemap')
-            )
-            
-            fig_treemap.update_layout(
-                margin=dict(t=10, l=10, r=10, b=10),
-                height=740,
-                uniformtext=dict(minsize=8, mode=False)
-            )
-            
-            st.plotly_chart(fig_treemap, use_container_width=True)
+        all_df = active_df.sort_values(by="당일비중(%)", ascending=False).copy()
+        all_df['표시명'] = (
+            "<span style='font-size:20px; font-weight:bold;'>" + all_df['종목코드'] + "</span><br>" +
+            "<span style='font-size:15px;'>" + all_df['주가변동률(%)'].map('{:+.2f}%'.format) + "</span>"
+        )
+        
+        fig_treemap = px.treemap(
+            all_df,
+            path=['표시명'],
+            values='당일비중(%)',
+            color='주가변동률(%)',
+            color_continuous_scale=[
+                [0.0, '#4285F4'],   # 파랑 (하락)
+                [0.166, '#3B72E2'], 
+                [0.333, '#345FCF'], 
+                [0.5, '#404552'],   # 회색 (보합)
+                [0.666, '#8B3A48'], 
+                [0.833, '#C83742'], 
+                [1.0, '#FF1744']    # 빨강 (상승)
+            ],
+            range_color=[-3.0, 3.0]
+        )
+        
+        fig_treemap.update_traces(
+            textposition="middle center",
+            selector=dict(type='treemap')
+        )
+        
+        # 스마트폰 세로 화면에서 보기 좋도록 높이 설정 (550px)
+        fig_treemap.update_layout(
+            margin=dict(t=5, l=5, r=5, b=5),
+            height=550,
+            uniformtext=dict(minsize=8, mode=False)
+        )
+        
+        st.plotly_chart(fig_treemap, use_container_width=True)
 
-        # 2. 🔄 비중 변화 TOP 20 (열 순서 재배치 및 전체 가운데 정렬)
-        with col_viz2:
-            st.markdown("### 🔄 전일 대비 비중 변화 TOP 20")
+        # 2. 🔄 비중 변화 TOP 20 (모바일 화면 아래에 세로로 배치)
+        st.markdown("### 🔄 전일 대비 비중 변화 TOP 20")
+        
+        top20_change_df = result_df.copy()
+        top20_change_df['절대변화량'] = top20_change_df['비중변화_수치'].abs()
+        top20_change_df = top20_change_df.sort_values(by="절대변화량", ascending=False).head(20)
+        
+        display_top20 = top20_change_df[['종목코드', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']].reset_index(drop=True)
+        display_top20.index = range(1, len(display_top20) + 1)
+        
+        stiler_top20 = display_top20.style
+        if hasattr(stiler_top20, "map"):
+            styled_top20 = stiler_top20.map(color_weight_change, subset=['비중변화(%p)']).map(color_change_pct, subset=['주가변동률(%)'])
+        else:
+            styled_top20 = stiler_top20.applymap(color_weight_change, subset=['비중변화(%p)']).applymap(color_change_pct, subset=['주가변동률(%)'])
             
-            top20_change_df = result_df.copy()
-            top20_change_df['절대변화량'] = top20_change_df['비중변화_수치'].abs()
-            top20_change_df = top20_change_df.sort_values(by="절대변화량", ascending=False).head(20)
-            
-            # [수정] 요청하신 순서대로 열 배치 (종목코드, 주가변동률(%), 당일비중(%), 전일비중(%), 비중변화(%p))
-            display_top20 = top20_change_df[['종목코드', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']].reset_index(drop=True)
-            display_top20.index = range(1, len(display_top20) + 1)
-            
-            stiler_top20 = display_top20.style
-            if hasattr(stiler_top20, "map"):
-                styled_top20 = stiler_top20.map(color_weight_change, subset=['비중변화(%p)']).map(color_change_pct, subset=['주가변동률(%)'])
-            else:
-                styled_top20 = stiler_top20.applymap(color_weight_change, subset=['비중변화(%p)']).applymap(color_change_pct, subset=['주가변동률(%)'])
-                
-            styled_top20 = styled_top20.format({
-                '당일비중(%)': '{:.2f}%',
-                '전일비중(%)': lambda x: f"{float(x.replace('%','')):.2f}%" if '%' in str(x) else x,
-                '주가변동률(%)': '{:+.2f}%'
-            }).set_properties(**{'text-align': 'center'})  # [수정] 모든 셀 내용 및 헤더 영역 중앙 정렬
-            
-            st.dataframe(styled_top20, use_container_width=True, height=740)
+        styled_top20 = styled_top20.format({
+            '당일비중(%)': '{:.2f}%',
+            '전일비중(%)': lambda x: f"{float(x.replace('%','')):.2f}%" if '%' in str(x) else x,
+            '주가변동률(%)': '{:+.2f}%'
+        }).set_properties(**{'text-align': 'center'})
+        
+        st.dataframe(styled_top20, use_container_width=True, height=650)
 
         # =========================================================
-        # 📊 3. TradingView 종목별 실시간 전체 현황 표 (중앙 정렬)
+        # 📊 3. TradingView 종목별 실시간 전체 현황 표
         # =========================================================
-        st.markdown("### 📊 TradingView 종목별 실시간 현황 (전일 대비 비중 추적)")
+        st.markdown("### 📊 TradingView 종목별 실시간 전체 현황")
         
         display_full_df = result_df.drop(columns=['비중변화_수치'], errors='ignore').reset_index(drop=True)
         display_full_df.index = range(1, len(display_full_df) + 1)
@@ -642,4 +619,4 @@ if df_input is not None and not df_input.empty:
             '당일비중(%)': '{:.2f}%'
         }).set_properties(**{'text-align': 'center'})
         
-        st.dataframe(styled_full, use_container_width=True)
+        st.dataframe(styled_full, use_container_width=True, height=500)

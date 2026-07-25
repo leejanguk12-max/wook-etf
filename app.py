@@ -9,16 +9,37 @@ import plotly.express as px
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
 
-# [핵심] 수동 업로드 박스의 텍스트 겹침 현상을 원천 차단하는 커스텀 CSS 주입
+# [핵심] 수동 업로드 버튼을 자동 불러오기 버튼과 똑같이 가로로 꽉 차는 흰색 박스로 변환하고 텍스트 겹침 현상 원천 차단
 st.markdown("""
 <style>
-    /* file_uploader 내부의 겹치는 텍스트 영역을 깔끔하게 정돈 */
-    [data-testid='stFileUploader'] section {
-        padding: 10px !important;
-        text-align: center;
+    /* file_uploader 전체 영역 스타일 정돈 */
+    [data-testid='stFileUploader'] {
+        width: 100% !important;
     }
+    [data-testid='stFileUploader'] section {
+        padding: 15px !important;
+        background-color: #FFFFFF !important;
+        border: 1px solid rgba(49, 51, 63, 0.2) !important;
+        border-radius: 0.5rem !important;
+    }
+    /* 내부 드래그 앤 드롭 안내 문구 숨기기 */
+    [data-testid='stFileUploader'] section div div span, 
     [data-testid='stFileUploader'] section small {
         display: none !important;
+    }
+    /* 업로드 버튼을 자동 불러오기 버튼과 완벽히 동일한 디자인으로 확장 */
+    [data-testid='stFileUploader'] section button {
+        width: 100% !important;
+        background-color: #FFFFFF !important;
+        color: #31333F !important;
+        border: 1px solid #D6D6D8 !important;
+        border-radius: 4px !important;
+        font-weight: 400 !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    [data-testid='stFileUploader'] section button:hover {
+        border-color: #FF4B4B !important;
+        color: #FF4B4B !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -325,7 +346,7 @@ st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
 
-# [수정] label을 완전히 숨기고 깔끔한 박스로 정돈
+# [수정] 자동 불러오기 버튼과 완벽히 동일한 가로 크기와 깔끔한 박스 형태로 변환된 업로더
 uploaded_file = st.file_uploader(
     "📁 수동 업로드 (엑셀 파일 .xlsx)", 
     type=["xlsx", "xls"], 
@@ -591,7 +612,7 @@ if df_input is not None and not df_input.empty:
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================
-        # 🔄 비중 변화 TOP 10 (빈칸 원천 제거를 위해 정확한 행 높이 연산 적용)
+        # 🔄 비중 변화 TOP 10 (빈칸 제거 및 10개 행에 딱 맞춤)
         # =========================================================
         st.markdown("---")
         st.markdown("### 🔄 전일 대비 비중 변화 TOP 10")
@@ -615,7 +636,6 @@ if df_input is not None and not df_input.empty:
             '주가변동률(%)': '{:+.2f}%'
         }).set_properties(**{'text-align': 'center'})
         
-        # [수정] 10개 행에 정확히 밀착되도록 height를 350px로 최적화하여 하단 빈칸을 없앰
         st.dataframe(styled_top10, use_container_width=True, height=385)
 
         # =========================================================

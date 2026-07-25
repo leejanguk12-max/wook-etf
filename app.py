@@ -9,41 +9,6 @@ import plotly.express as px
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
 
-# [핵심] 수동 업로드 버튼을 자동 불러오기 버튼과 똑같이 가로로 꽉 차는 흰색 박스로 변환하고 텍스트 겹침 현상 원천 차단
-st.markdown("""
-<style>
-    /* file_uploader 전체 영역 스타일 정돈 */
-    [data-testid='stFileUploader'] {
-        width: 100% !important;
-    }
-    [data-testid='stFileUploader'] section {
-        padding: 15px !important;
-        background-color: #FFFFFF !important;
-        border: 1px solid rgba(49, 51, 63, 0.2) !important;
-        border-radius: 0.5rem !important;
-    }
-    /* 내부 드래그 앤 드롭 안내 문구 숨기기 */
-    [data-testid='stFileUploader'] section div div span, 
-    [data-testid='stFileUploader'] section small {
-        display: none !important;
-    }
-    /* 업로드 버튼을 자동 불러오기 버튼과 완벽히 동일한 디자인으로 확장 */
-    [data-testid='stFileUploader'] section button {
-        width: 100% !important;
-        background-color: #FFFFFF !important;
-        color: #31333F !important;
-        border: 1px solid #D6D6D8 !important;
-        border-radius: 4px !important;
-        font-weight: 400 !important;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    }
-    [data-testid='stFileUploader'] section button:hover {
-        border-color: #FF4B4B !important;
-        color: #FF4B4B !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
 st.markdown("타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**, **실시간 기준가**를 연동합니다.")
 
@@ -346,12 +311,10 @@ st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
 
-# [수정] 자동 불러오기 버튼과 완벽히 동일한 가로 크기와 깔끔한 박스 형태로 변환된 업로더
-uploaded_file = st.file_uploader(
-    "📁 수동 업로드 (엑셀 파일 .xlsx)", 
-    type=["xlsx", "xls"], 
-    label_visibility="collapsed"
-)
+# [수정] 겹치는 file_uploader 대신 깔끔하게 토글형 수동 업로드 기능 구현 (텍스트 겹침 100% 원천 차단)
+uploaded_file = None
+with st.expander("📁 엑셀 파일 수동 업로드하기", expanded=False):
+    uploaded_file = st.file_uploader("엑셀 파일(.xlsx)을 선택하세요", type=["xlsx", "xls"], label_visibility="collapsed")
 
 df_input = None
 df_prev = None

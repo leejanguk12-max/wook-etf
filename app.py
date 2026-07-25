@@ -10,31 +10,24 @@ st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(Tradin
 st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드 (TradingView)")
 st.markdown("네이버 금융의 **서울외환시장 마감 환율(오후 3:30)**과 **426030 종가**, 그리고 **타임폴리오 공식 사이트의 실시간 기준가**를 연동하여 산출합니다.")
 
-tab1, tab2 = st.tabs(["📁 엑셀 파일 업로드", "📋 웹페이지 텍스트 직접 붙여넣기"])
+# 1. 타임폴리오 사이트 바로가기 버튼 (상단배치)
+st.link_button(
+    "🔗 타임폴리오 공식 구성종목 페이지 바로가기", 
+    "https://timeetf.co.kr/m11_view.php?idx=2&cate=&pdfDate=2026-07-24#constituentItems",
+    use_container_width=False
+)
+
+st.markdown("---")
+
+# 2. 엑셀 파일 업로드 창
+uploaded_file = st.file_uploader("📁 타임폴리오 구성종목 엑셀 파일(.xlsx) 업로드", type=["xlsx", "xls"])
 
 df_input = None
-
-# [방식 1] 엑셀 파일 업로드
-with tab1:
-    uploaded_file = st.file_uploader("타임폴리오 구성종목 엑셀 파일(.xlsx) 업로드", type=["xlsx", "xls"])
-    if uploaded_file is not None:
-        try:
-            df_input = pd.read_excel(uploaded_file)
-        except Exception as e:
-            st.error(f"엑셀을 읽는 중 오류 발생: {e}")
-
-# [방식 2] 웹페이지 텍스트 붙여넣기
-with tab2:
-    st.markdown("타임폴리오 웹페이지의 구성종목 표를 마우스로 드래그하여 복사(`Ctrl+C`)한 후 아래에 붙여넣으세요.")
-    pasted_text = st.text_area("복사한 내용 붙여넣기", height=150)
-    if pasted_text:
-        try:
-            df_input = pd.read_csv(io.StringIO(pasted_text), sep='\t')
-        except Exception:
-            try:
-                df_input = pd.read_csv(io.StringIO(pasted_text), sep=r'\s+')
-            except Exception as e:
-                st.error("붙여넣은 형식을 분석할 수 없습니다.")
+if uploaded_file is not None:
+    try:
+        df_input = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"엑셀을 읽는 중 오류 발생: {e}")
 
 # 네이버 금융에서 서울외환시장 정규장 마감 환율(오후 3:30 기준가) 수집
 def get_naver_official_base_fx():
@@ -60,13 +53,11 @@ def get_naver_etf_prev_close(ticker_code="426030"):
         resp = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 1. 주말 및 장 마감 후에는 네이버 '현재가(no_today)'가 가장 최근 거래일 마감가입니다.
         today_tag = soup.select_one("p.no_today em span.blind")
         if today_tag:
             price_str = today_tag.text.strip().replace(",", "")
             return float(price_str)
             
-        # 2. 백업: 전일 종가 태그
         prev_tag = soup.select_one("td.first em span.blind")
         if prev_tag:
             price_str = prev_tag.text.strip().replace(",", "")
@@ -75,7 +66,7 @@ def get_naver_etf_prev_close(ticker_code="426030"):
         pass
     return 0.0
 
-# 타임폴리오 공식 홈페이지(timeetf.co.kr) 정밀 파싱 (태그 기반 파싱)
+# 타임폴리오 공식 홈페이지(timeetf.co.kr) 정밀 파싱
 def get_timefolio_official_data(idx=2):
     url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
     headers = {
@@ -93,51 +84,40 @@ def get_timefolio_official_data(idx=2):
         resp = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # '기준가' 섹션 상위 컨테이너 검색
         boxes = soup.select("div.standard_price_box") or soup.select("ul.price_info li") or soup.find_all("div")
         
         for box in boxes:
             box_text = box.get_text()
             
-            # 1. 실시간 기준가 블록
             if "실시간" in box_text and "기준가" in box_text:
-                # 금액
                 m_val = re.search(r'([\d,]+\.\d+)', box_text)
                 if m_val:
                     result["live_nav"] = float(m_val.group(1).replace(",", ""))
-                # 시간 (예: 2026-07-25 03:24:03)
-                m_time = re.search(r'(\d{4}[-.\/] \d{2}[-.\/]\d{2}\s+\d{2}:\d{2}:\d{2}|\d{4}[-.\/]\d{2}[-.\/]\d{2}\s+\d{2}:\d{2}:\d{2})', box_text)
+                m_time = re.search(r'(\d{4}[-.\/]\d{2}[-.\/]\d{2}\s+\d{2}:\d{2}:\d{2})', box_text)
                 if m_time:
                     result["live_time"] = m_time.group(1)
             
-            # 2. 확정 기준가 블록 (실시간이라는 단어가 없는 일반 기준가)
             elif "기준가" in box_text and "실시간" not in box_text:
-                # 금액
                 m_val = re.search(r'([\d,]+\.\d+)', box_text)
                 if m_val:
                     result["base_nav"] = float(m_val.group(1).replace(",", ""))
-                # 일자 (예: 2026-07-23)
                 m_date = re.search(r'(\d{4}[-.\/]\d{2}[-.\/]\d{2})', box_text)
                 if m_date:
                     result["base_date"] = m_date.group(1)
 
-        # 백업 방식: 전체 텍스트 구조 기반 파싱 (태그 방식 실패 시)
         if result["base_nav"] == 0.0:
             all_text = soup.get_text()
-            # '기준가 (원)' 바로 뒤에 나오는 숫자를 확정 NAV로 파싱
             matches = re.findall(r'기준가\s*\(원\)\s*([\d,]+\.\d+)', all_text)
             if len(matches) > 1:
                 result["base_nav"] = float(matches[1].replace(",", ""))
             elif len(matches) == 1 and result["live_nav"] != float(matches[0].replace(",", "")):
                 result["base_nav"] = float(matches[0].replace(",", ""))
 
-            # 날짜 검색 (2026-07-23 등)
             dates = re.findall(r'(\d{4}-\d{2}-\d{2})', all_text)
             for d in dates:
                 if "03:" not in d and d not in result["live_time"]:
                     result["base_date"] = d
                     break
-
     except Exception:
         pass
         
@@ -210,31 +190,33 @@ def get_tradingview_direct_prices(symbols):
         
     return result_map, live_fx
 
+# 변동률 수치 색상 스타일 적용 함수 (상승: 파란색, 하락: 빨간색)
+def color_change_pct(val):
+    try:
+        val_num = float(val)
+        if val_num > 0:
+            return 'color: #0055FF; font-weight: bold;'  # 상승: 파란색
+        elif val_num < 0:
+            return 'color: #FF0000; font-weight: bold;'  # 하락: 빨간색
+    except Exception:
+        pass
+    return ''
+
 if df_input is not None and not df_input.empty:
     st.success(f"✅ 총 {len(df_input)}개의 종목 데이터를 읽었습니다!")
     
-    st.markdown("### 🔍 1. 데이터 미리보기")
-    st.dataframe(df_input.head())
+    # 열 자동 탐색
+    ticker_col = df_input.columns[0]
+    weight_col = df_input.columns[-1]
     
-    st.markdown("### ⚙️ 2. 컬럼 매칭 및 설정")
-    col1, col2 = st.columns(2)
-    
-    default_ticker_idx = 0
-    default_weight_idx = len(df_input.columns) - 1
-    
-    for i, col in enumerate(df_input.columns):
+    for col in df_input.columns:
         col_str = str(col)
         if "코드" in col_str or "티커" in col_str or "Symbol" in col_str:
-            default_ticker_idx = i
+            ticker_col = col
         if "비중" in col_str or "평가" in col_str or "Weight" in col_str:
-            default_weight_idx = i
-
-    with col1:
-        ticker_col = st.selectbox("📌 '종목코드(티커)' 열 선택 (※ NVDA, AAPL 등 티커 열)", df_input.columns, index=default_ticker_idx)
-    with col2:
-        weight_col = st.selectbox("📌 '비중(%)' 열 선택", df_input.columns, index=default_weight_idx)
+            weight_col = col
     
-    if st.button("🚀 TradingView 주가 & 정밀 환율 실시간 가져오기 및 iNAV 계산"):
+    if st.button("🚀 TradingView 주가 & 정밀 환율 실시간 가져오기 및 iNAV 계산", use_container_width=True):
         with st.spinner("타임폴리오 공식 데이터 및 실시간 시세 수집 중..."):
             clean_df = df_input.dropna(subset=[ticker_col, weight_col]).copy()
             ticker_list = clean_df[ticker_col].tolist()
@@ -279,32 +261,24 @@ if df_input is not None and not df_input.empty:
                         "종목코드": ticker + " (현금)", 
                         "TradingView실시간가($)": 1.0, 
                         "주가변동률(%)": 0.0, 
-                        "환율변동률(%)": 0.0,
-                        "합산변동률(%)": 0.0,
                         "비중(%)": weight
                     })
                 # 2) NQU6 등 선물 -> QQQ 대체 처리
                 elif "NQU" in ticker or "NQ1!" in ticker or "NQ=" in ticker:
                     qqq_price, qqq_change = batch_results.get("QQQ", (0.0, 0.0))
-                    total_comb = qqq_change + usdkrw_change_pct
                     live_data.append({
                         "종목코드": f"{ticker} (QQQ대체)", 
                         "TradingView실시간가($)": qqq_price, 
                         "주가변동률(%)": qqq_change, 
-                        "환율변동률(%)": usdkrw_change_pct,
-                        "합산변동률(%)": total_comb,
                         "비중(%)": weight
                     })
                 # 3) 일반 주식 종목 매칭
                 elif ticker in batch_results and batch_results[ticker][0] > 0:
                     live_price, stock_change_pct = batch_results[ticker]
-                    total_comb = stock_change_pct + usdkrw_change_pct
                     live_data.append({
                         "종목코드": ticker, 
                         "TradingView실시간가($)": live_price, 
                         "주가변동률(%)": stock_change_pct, 
-                        "환율변동률(%)": usdkrw_change_pct,
-                        "합산변동률(%)": total_comb,
                         "비중(%)": weight
                     })
                 # 4) 시세 수집 실패 시
@@ -314,8 +288,6 @@ if df_input is not None and not df_input.empty:
                         "종목코드": ticker, 
                         "TradingView실시간가($)": 0.0, 
                         "주가변동률(%)": 0.0, 
-                        "환율변동률(%)": 0.0,
-                        "합산변동률(%)": 0.0,
                         "비중(%)": weight
                     })
             
@@ -324,7 +296,7 @@ if df_input is not None and not df_input.empty:
             total_weight = result_df['비중(%)'].sum()
             if total_weight > 0:
                 stock_inav_change = ((result_df['비중(%)'] / total_weight) * result_df['주가변동률(%)']).sum()
-                fx_inav_change = ((result_df['비중(%)'] / total_weight) * result_df['환율변동률(%)']).sum()
+                fx_inav_change = usdkrw_change_pct
                 total_inav_change = stock_inav_change + fx_inav_change
             else:
                 stock_inav_change = 0.0
@@ -353,18 +325,18 @@ if df_input is not None and not df_input.empty:
                 else:
                     st.metric(label="💵 TIMEFOLIO 미국나스닥100액티브 예상 iNAV", value="종가 수집 불가")
             
-            # 타임폴리오 공식 홈페이지 정보 카드 (정밀 표기)
+            # 타임폴리오 공식 홈페이지 정보 카드
             if timefolio_data["live_nav"] > 0 or timefolio_data["base_nav"] > 0:
-                live_nav_str = f"{timefolio_data['live_nav']:,.2f} 원" if timefolio_data['live_nav'] > 0 else "수집 대기 중"
-                base_nav_str = f"{timefolio_data['base_nav']:,.2f} 원" if timefolio_data['base_nav'] > 0 else "수집 대기 중"
+                live_nav_str = f"**{timefolio_data['live_nav']:,.2f}원**" if timefolio_data['live_nav'] > 0 else "**수집 대기 중**"
+                base_nav_str = f"**{timefolio_data['base_nav']:,.2f}원**" if timefolio_data['base_nav'] > 0 else "**수집 대기 중**"
                 
                 time_info = f" ({timefolio_data['live_time']} 기준)" if timefolio_data['live_time'] else ""
                 date_info = f" ({timefolio_data['base_date']} 기준)" if timefolio_data['base_date'] else ""
                 
                 st.success(
                     f"🏛️ **타임폴리오 공식 홈페이지 공시 정보**  \n"
-                    f"- **실시간 기준가**: **`{live_nav_str}`**{time_info}  \n"
-                    f"- **전일 확정 기준가**: **`{base_nav_str}`**{date_info}"
+                    f"- 실시간 기준가: {live_nav_str}{time_info}  \n"
+                    f"- 전일 확정 기준가: {base_nav_str}{date_info}"
                 )
             
             # 환율 상세 박스
@@ -378,8 +350,19 @@ if df_input is not None and not df_input.empty:
             if failed_tickers:
                 st.warning(f"⚠️ 시세를 불러오지 못한 티커: {', '.join(set(failed_tickers))}")
                 
-            st.markdown("### 📊 3. TradingView 종목별 실시간 현황")
-            st.dataframe(result_df)
+            st.markdown("### 📊 TradingView 종목별 실시간 현황")
+            
+            # 표 색상 스타일링 적용 (상승: 파란색, 하락: 빨간색)
+            styled_df = result_df.style.applymap(
+                color_change_pct, 
+                subset=['주가변동률(%)']
+            ).format({
+                'TradingView실시간가($)': '{:,.2f}',
+                '주가변동률(%)': '{:+.2f}',
+                '비중(%)': '{:.2f}'
+            })
+            
+            st.dataframe(styled_df, use_container_width=True)
 
 elif df_input is not None and df_input.empty:
     st.warning("⚠️ 선택한 데이터/파일이 비어있습니다.")

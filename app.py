@@ -296,7 +296,8 @@ def get_tradingview_direct_prices(symbols):
 # 주가 변동률 색상 스타일
 def color_change_pct(val):
     try:
-        val_num = float(val)
+        clean_val = str(val).replace('%', '').strip()
+        val_num = float(clean_val)
         if val_num > 0:
             return 'color: #0055FF; font-weight: bold;'
         elif val_num < 0:
@@ -314,7 +315,7 @@ def color_weight_change(val):
         if "OUT" in val_str or "편출" in val_str:
             return 'color: #FF8C00; font-weight: bold;'
             
-        val_num = float(val_str.replace('%p', '').replace('+', '').strip())
+        val_num = float(val_str.replace('%', '').replace('+', '').strip())
         if val_num > 0:
             return 'color: #0055FF; font-weight: bold;'
         elif val_num < 0:
@@ -460,7 +461,6 @@ if df_input is not None and not df_input.empty:
                 except ValueError:
                     pass
         
-        # [추가] 어제 파일에는 있었으나 오늘 파일에 없는 종목(편출 종목)도 비중 변화 분석에 포함시키기 위해 추출
         all_known_tickers = set(clean_df[ticker_col].tolist())
         if df_prev is not None and not df_prev.empty:
             all_known_tickers.update(df_prev['종목코드'].tolist())
@@ -486,7 +486,6 @@ if df_input is not None and not df_input.empty:
         
         cash_keywords = ["KRW", "CASH", "현금", "원화", "달러", "예금"]
         
-        # 오늘 보유 중인 종목 데이터 처리
         curr_tickers_map = {}
         for index, row in clean_df.iterrows():
             raw_ticker = str(row[ticker_col]).strip()
@@ -499,7 +498,6 @@ if df_input is not None and not df_input.empty:
 
         processed_tickers = set()
 
-        # 1. 오늘 보유 중이거나 어제 있었던 모든 종목 순회
         for ticker in ticker_list:
             if ticker in processed_tickers:
                 continue
@@ -522,7 +520,8 @@ if df_input is not None and not df_input.empty:
                 if abs(w_diff) < 0.001:
                     w_diff_str = "-"
                 else:
-                    w_diff_str = f"{w_diff:+.2f}%p"
+                    # [수정] 비중 변화 표에서 'p'를 제거하고 '%'만 표시
+                    w_diff_str = f"{w_diff:+.2f}%"
             else:
                 prev_w_str = "-"
                 w_diff_str = "✨ NEW"
@@ -530,14 +529,12 @@ if df_input is not None and not df_input.empty:
                 if weight > 0:
                     new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
 
-            # 편출(OUT)된 종목 처리
             if weight == 0.0 and prev_w is not None and prev_w > 0:
                 w_diff = 0.0 - prev_w
                 w_diff_val = w_diff
                 prev_w_str = f"{prev_w:.2f}%"
                 w_diff_str = "🚪 OUT"
 
-            # 주가 변동률 및 가격 매핑
             stock_change_pct = 0.0
             live_price = 0.0
 
@@ -549,7 +546,7 @@ if df_input is not None and not df_input.empty:
                     "주가변동률(%)": 0.0, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
-                    "비중변화(%p)": w_diff_str,
+                    "비중변화(%)": w_diff_str,
                     "비중변화_수치": w_diff_val
                 })
             elif "NQU" in ticker or "NQ1!" in ticker or "NQ=" in ticker:
@@ -560,7 +557,7 @@ if df_input is not None and not df_input.empty:
                     "주가변동률(%)": qqq_change, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
-                    "비중변화(%p)": w_diff_str,
+                    "비중변화(%)": w_diff_str,
                     "비중변화_수치": w_diff_val
                 })
             elif ticker in batch_results and batch_results[ticker][0] > 0:
@@ -571,7 +568,7 @@ if df_input is not None and not df_input.empty:
                     "주가변동률(%)": stock_change_pct, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
-                    "비중변화(%p)": w_diff_str,
+                    "비중변화(%)": w_diff_str,
                     "비중변화_수치": w_diff_val
                 })
             else:
@@ -582,7 +579,7 @@ if df_input is not None and not df_input.empty:
                     "주가변동률(%)": 0.0, 
                     "당일비중(%)": weight,
                     "전일비중(%)": prev_w_str,
-                    "비중변화(%p)": w_diff_str,
+                    "비중변화(%)": w_diff_str,
                     "비중변화_수치": w_diff_val
                 })
 
@@ -691,7 +688,7 @@ if df_input is not None and not df_input.empty:
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================
-        # 🔄 비중 변화 TOP 10 (편출 종목도 변동폭 크면 포함되도록 수정)
+        # 🔄 비중 변화 TOP 10
         # =========================================================
         st.markdown("---")
         st.markdown("### 🔄 전일 대비 비중 변화 TOP 10")
@@ -700,14 +697,14 @@ if df_input is not None and not df_input.empty:
         top10_change_df['절대변화량'] = top10_change_df['비중변화_수치'].abs()
         top10_change_df = top10_change_df.sort_values(by="절대변화량", ascending=False).head(10)
         
-        display_top10 = top10_change_df[['종목코드', '당일비중(%)', '전일비중(%)', '비중변화(%p)', '주가변동률(%)']].reset_index(drop=True)
+        display_top10 = top10_change_df[['종목코드', '당일비중(%)', '전일비중(%)', '비중변화(%)', '주가변동률(%)']].reset_index(drop=True)
         display_top10.index = range(1, len(display_top10) + 1)
         
         stiler_top10 = display_top10.style
         if hasattr(stiler_top10, "map"):
-            styled_top10 = stiler_top10.map(color_weight_change, subset=['비중변화(%p)']).map(color_change_pct, subset=['주가변동률(%)'])
+            styled_top10 = stiler_top10.map(color_weight_change, subset=['비중변화(%)']).map(color_change_pct, subset=['주가변동률(%)'])
         else:
-            styled_top10 = stiler_top10.applymap(color_weight_change, subset=['비중변화(%p)']).applymap(color_change_pct, subset=['주가변동률(%)'])
+            styled_top10 = stiler_top10.applymap(color_weight_change, subset=['비중변화(%)']).applymap(color_change_pct, subset=['주가변동률(%)'])
             
         styled_top10 = styled_top10.format({
             '당일비중(%)': '{:.2f}%',
@@ -718,7 +715,7 @@ if df_input is not None and not df_input.empty:
         st.dataframe(styled_top10, use_container_width=True, height=385)
 
         # =========================================================
-        # 📊 3. 종목별 실시간 전체 현황 표 (보유 중인 종목만 표시)
+        # 📊 3. 종목별 실시간 전체 현황 표 (주가변동률에 % 추가)
         # =========================================================
         st.markdown("---")
         st.markdown("### 📊 종목별 실시간 전체 현황")
@@ -737,13 +734,16 @@ if df_input is not None and not df_input.empty:
                 return f"{val:,.2f}"
 
         display_full_df['실시간 가격(표시용)'] = display_full_df.apply(format_price_col, axis=1)
-        display_full_df = display_full_df[['종목코드', '실시간 가격(표시용)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']]
-        display_full_df.columns = ['종목코드', '실시간 가격($)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']
+        
+        # [수정] 주가변동률 뒤에 % 기호가 붙도록 포맷팅
+        display_full_df['주가변동률(표시용)'] = display_full_df['주가변동률(%)'].apply(lambda x: f"{x:+.2f}%")
 
-        styled_full = display_full_df.style.map(color_change_pct, subset=['주가변동률(%)']).map(color_weight_change, subset=['비중변화(%p)']) if hasattr(display_full_df.style, "map") else display_full_df.style.applymap(color_change_pct, subset=['주가변동률(%)']).applymap(color_weight_change, subset=['비중변화(%p)'])
+        display_full_df = display_full_df[['종목코드', '실시간 가격(표시용)', '주가변동률(표시용)', '당일비중(%)', '전일비중(%)', '비중변화(%)']]
+        display_full_df.columns = ['종목코드', '실시간 가격($)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%)']
+
+        styled_full = display_full_df.style.map(color_change_pct, subset=['주가변동률(%)']).map(color_weight_change, subset=['비중변화(%)']) if hasattr(display_full_df.style, "map") else display_full_df.style.applymap(color_change_pct, subset=['주가변동률(%)']).applymap(color_weight_change, subset=['비중변화(%)'])
 
         styled_full = styled_full.format({
-            '주가변동률(%)': '{:+.2f}',
             '당일비중(%)': '{:.2f}%'
         }).set_properties(**{'text-align': 'center'})
         

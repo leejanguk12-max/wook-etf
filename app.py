@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 import plotly.express as px
 
-# 모바일 화면 대응을 위해 layout="centered" 또는 wide 유지하되 세로 스택형으로 구성
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
 
 st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
@@ -310,17 +309,9 @@ def color_weight_change(val):
 # 메인 UI
 st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
-col_btn1, col_btn2, col_empty = st.columns([2, 2, 6])
-
-uploaded_file = None
-fetch_auto = False
-
-with col_btn1:
-    fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
-
-with col_btn2:
-    with st.popover("📁 수동 업로드"):
-        uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 선택", type=["xlsx", "xls"])
+# [수정] 수동 업로드 버튼 깨짐 방지: 두 버튼을 세로 또는 각각 꽉 차게 배치
+fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
+uploaded_file = st.file_uploader("📁 수동 업로드 (엑셀 파일 .xlsx)", type=["xlsx", "xls"])
 
 df_input = None
 df_prev = None
@@ -495,11 +486,11 @@ if df_input is not None and not df_input.empty:
             fx_inav_change = 0.0
             total_inav_change = 0.0
         
-        # 상단 요약 카드 (모바일에서도 가로로 쪼개지지 않고 깔끔하게 위아래로 쌓이도록 함)
+        # 상단 요약 카드
         st.metric(
             label="📈 실시간 iNAV 추정 총 변동률", 
             value=f"{total_inav_change:+.2f}%", 
-            delta=f"주가 변동({stock_inav_change:+.2f}%) + 환율 변동({fx_inav_change:+.2f}%)"
+            delta=f"주가({stock_inav_change:+.2f}%) + 환율({fx_inav_change:+.2f}%)"
         )
             
         if etf_prev_close > 0:
@@ -522,18 +513,17 @@ if df_input is not None and not df_input.empty:
                 f"- 전일 확정: {base_nav_str}"
             )
         
-        # 신규 편입 / 편출(삭제) 종목 요약 카드 박스
+        # 신규 편입 / 편출 종목 요약 카드 박스
         if new_added_stocks or removed_stocks:
             new_msg = f"✨ **신규 편입**: {', '.join(new_added_stocks)}" if new_added_stocks else "✨ **신규 편입**: 없음"
             out_msg = f"🚪 **편출 (전량 매도)**: {', '.join(removed_stocks)}" if removed_stocks else "🚪 **편출 (전량 매도)**: 없음"
             st.warning(f"📋 **포트폴리오 변동 내역**  \n- {new_msg}  \n- {out_msg}")
 
         # =========================================================
-        # 🔥 [모바일 최적화 세로 스택 레이아웃] 히트맵 & TOP 20 표
+        # 🔥 [모바일 최적화] 히트맵 (컬러바 하단 배치 및 가로 꽉 참)
         # =========================================================
         st.markdown("---")
         
-        # 1. 🔥 전체 구성종목 히트맵 (모바일 세로 폭 전체 사용)
         active_df = result_df[result_df['당일비중(%)'] > 0].copy()
         st.markdown(f"### 🔥 전체 구성종목 ({len(active_df)}개) 히트맵")
         
@@ -565,42 +555,55 @@ if df_input is not None and not df_input.empty:
             selector=dict(type='treemap')
         )
         
-        # 스마트폰 세로 화면에서 보기 좋도록 높이 설정 (550px)
+        # [수정] 컬러바를 하단(bottom)으로 이동하고 가로 방향(orientation='h')으로 배치하여 히트맵이 화면에 가로 세로 꽉 차게 함
         fig_treemap.update_layout(
             margin=dict(t=5, l=5, r=5, b=5),
-            height=550,
-            uniformtext=dict(minsize=8, mode=False)
+            height=600,
+            uniformtext=dict(minsize=8, mode=False),
+            coloraxis_colorbar=dict(
+                title=dict(text="주가변동률(%)", side="top"),
+                orientation="h",
+                y=-0.1,
+                x=0.5,
+                xanchor="center",
+                len=0.8
+            )
         )
         
         st.plotly_chart(fig_treemap, use_container_width=True)
 
-        # 2. 🔄 비중 변화 TOP 20 (모바일 화면 아래에 세로로 배치)
-        st.markdown("### 🔄 전일 대비 비중 변화 TOP 20")
+        # =========================================================
+        # 🔄 비중 변화 TOP 10 (모바일 기준 세로로 분리 배치 & 주가변동률 맨 오른쪽 이동)
+        # =========================================================
+        st.markdown("---")
+        st.markdown("### 🔄 전일 대비 비중 변화 TOP 10")
         
-        top20_change_df = result_df.copy()
-        top20_change_df['절대변화량'] = top20_change_df['비중변화_수치'].abs()
-        top20_change_df = top20_change_df.sort_values(by="절대변화량", ascending=False).head(20)
+        top10_change_df = result_df.copy()
+        top10_change_df['절대변화량'] = top10_change_df['비중변화_수치'].abs()
+        top10_change_df = top10_change_df.sort_values(by="절대변화량", ascending=False).head(10)
         
-        display_top20 = top20_change_df[['종목코드', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']].reset_index(drop=True)
-        display_top20.index = range(1, len(display_top20) + 1)
+        # [수정] 열 순서 변경: 종목코드, 당일비중, 전일비중, 비중변화, 주가변동률(맨 오른쪽)
+        display_top10 = top10_change_df[['종목코드', '당일비중(%)', '전일비중(%)', '비중변화(%p)', '주가변동률(%)']].reset_index(drop=True)
+        display_top10.index = range(1, len(display_top10) + 1)
         
-        stiler_top20 = display_top20.style
-        if hasattr(stiler_top20, "map"):
-            styled_top20 = stiler_top20.map(color_weight_change, subset=['비중변화(%p)']).map(color_change_pct, subset=['주가변동률(%)'])
+        stiler_top10 = display_top10.style
+        if hasattr(stiler_top10, "map"):
+            styled_top10 = stiler_top10.map(color_weight_change, subset=['비중변화(%p)']).map(color_change_pct, subset=['주가변동률(%)'])
         else:
-            styled_top20 = stiler_top20.applymap(color_weight_change, subset=['비중변화(%p)']).applymap(color_change_pct, subset=['주가변동률(%)'])
+            styled_top10 = stiler_top10.applymap(color_weight_change, subset=['비중변화(%p)']).applymap(color_change_pct, subset=['주가변동률(%)'])
             
-        styled_top20 = styled_top20.format({
+        styled_top10 = styled_top10.format({
             '당일비중(%)': '{:.2f}%',
             '전일비중(%)': lambda x: f"{float(x.replace('%','')):.2f}%" if '%' in str(x) else x,
             '주가변동률(%)': '{:+.2f}%'
         }).set_properties(**{'text-align': 'center'})
         
-        st.dataframe(styled_top20, use_container_width=True, height=650)
+        st.dataframe(styled_top10, use_container_width=True, height=450)
 
         # =========================================================
         # 📊 3. TradingView 종목별 실시간 전체 현황 표
         # =========================================================
+        st.markdown("---")
         st.markdown("### 📊 TradingView 종목별 실시간 전체 현황")
         
         display_full_df = result_df.drop(columns=['비중변화_수치'], errors='ignore').reset_index(drop=True)

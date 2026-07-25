@@ -309,9 +309,14 @@ def color_weight_change(val):
 # 메인 UI
 st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
-# [수정] 수동 업로드 버튼 깨짐 방지: 두 버튼을 세로 또는 각각 꽉 차게 배치
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
-uploaded_file = st.file_uploader("📁 수동 업로드 (엑셀 파일 .xlsx)", type=["xlsx", "xls"])
+
+# [수정] 텍스트 겹침 및 회색 박스 제거를 위해 label_visibility를 hidden 처리하고 자동 불러오기 버튼과 동일한 폭으로 정돈
+uploaded_file = st.file_uploader(
+    "📁 수동 업로드 (엑셀 파일 .xlsx)", 
+    type=["xlsx", "xls"], 
+    label_visibility="collapsed"
+)
 
 df_input = None
 df_prev = None
@@ -520,7 +525,7 @@ if df_input is not None and not df_input.empty:
             st.warning(f"📋 **포트폴리오 변동 내역**  \n- {new_msg}  \n- {out_msg}")
 
         # =========================================================
-        # 🔥 [모바일 최적화] 히트맵 (컬러바 하단 배치 및 가로 꽉 참)
+        # 🔥 히트맵 (컬러바 하단 배치 및 가로 꽉 참)
         # =========================================================
         st.markdown("---")
         
@@ -555,7 +560,6 @@ if df_input is not None and not df_input.empty:
             selector=dict(type='treemap')
         )
         
-        # [수정] 컬러바를 하단(bottom)으로 이동하고 가로 방향(orientation='h')으로 배치하여 히트맵이 화면에 가로 세로 꽉 차게 함
         fig_treemap.update_layout(
             margin=dict(t=5, l=5, r=5, b=5),
             height=600,
@@ -573,7 +577,7 @@ if df_input is not None and not df_input.empty:
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================
-        # 🔄 비중 변화 TOP 10 (모바일 기준 세로로 분리 배치 & 주가변동률 맨 오른쪽 이동)
+        # 🔄 비중 변화 TOP 10 (빈칸 제거 및 10개 행에 딱 맞춤)
         # =========================================================
         st.markdown("---")
         st.markdown("### 🔄 전일 대비 비중 변화 TOP 10")
@@ -582,7 +586,6 @@ if df_input is not None and not df_input.empty:
         top10_change_df['절대변화량'] = top10_change_df['비중변화_수치'].abs()
         top10_change_df = top10_change_df.sort_values(by="절대변화량", ascending=False).head(10)
         
-        # [수정] 열 순서 변경: 종목코드, 당일비중, 전일비중, 비중변화, 주가변동률(맨 오른쪽)
         display_top10 = top10_change_df[['종목코드', '당일비중(%)', '전일비중(%)', '비중변화(%p)', '주가변동률(%)']].reset_index(drop=True)
         display_top10.index = range(1, len(display_top10) + 1)
         
@@ -598,7 +601,8 @@ if df_input is not None and not df_input.empty:
             '주가변동률(%)': '{:+.2f}%'
         }).set_properties(**{'text-align': 'center'})
         
-        st.dataframe(styled_top10, use_container_width=True, height=450)
+        # [수정] 고정 height 대신 행 개수(10개)에 맞춰 빈칸이 생기지 않도록 높이 최적화
+        st.dataframe(styled_top10, use_container_width=True, height=390)
 
         # =========================================================
         # 📊 3. TradingView 종목별 실시간 전체 현황 표

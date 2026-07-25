@@ -665,7 +665,7 @@ if df_input is not None and not df_input.empty:
             total_inav_change = 0.0
         
         # =========================================================
-        # 🏷️ 상단 현재가격 카드
+        # 🏷️ 상단 현재가격 카드 (현재가격 옆 퍼센트 배경색 적용: +면 연한 빨간색, -면 연한 하늘색)
         # =========================================================
         current_etf_price = naver_market["current_price"] if naver_market["current_price"] > 0 else 0.0
         price_change_pct = naver_market["price_change_pct"]
@@ -673,8 +673,17 @@ if df_input is not None and not df_input.empty:
         naver_nav = naver_market["naver_nav"]
         
         if current_etf_price > 0:
-            chg_color = "#0055FF" if price_change_pct > 0 else ("#FF0000" if price_change_pct < 0 else "#404552")
-            chg_str = f"<span style='color: {chg_color};'>({price_change_pct:+.2f}%)</span>"
+            pct_is_plus = (price_change_pct >= 0)
+            pct_bg = "#ffebee" if pct_is_plus else "#e3f2fd"
+            pct_txt_color = "#c62828" if pct_is_plus else "#0277bd"
+            
+            # % 퍼센트 부분에 배경색 알약 스타일 적용 (+면 연한 빨간색, -면 연한 하늘색)
+            chg_str = (
+                f"<span style='background-color: {pct_bg}; color: {pct_txt_color}; "
+                f"padding: 2px 8px; border-radius: 12px; font-size: 20px; font-weight: normal; display: inline-block;'>"
+                f"({price_change_pct:+.2f}%)"
+                f"</span>"
+            )
             
             disp_is_plus = (naver_disp >= 0)
             disp_bg = "#ffebee" if disp_is_plus else "#e3f2fd"

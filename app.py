@@ -352,11 +352,14 @@ if df_input is not None and not df_input.empty:
                 
             st.markdown("### 📊 TradingView 종목별 실시간 현황")
             
-            # 표 색상 스타일링 적용 (상승: 파란색, 하락: 빨간색)
-            styled_df = result_df.style.applymap(
-                color_change_pct, 
-                subset=['주가변동률(%)']
-            ).format({
+            # Pandas 버전 호환성 보정 (applymap -> map 변환)
+            stiler = result_df.style
+            if hasattr(stiler, "map"):
+                styled_df = stiler.map(color_change_pct, subset=['주가변동률(%)'])
+            else:
+                styled_df = stiler.applymap(color_change_pct, subset=['주가변동률(%)'])
+                
+            styled_df = styled_df.format({
                 'TradingView실시간가($)': '{:,.2f}',
                 '주가변동률(%)': '{:+.2f}',
                 '비중(%)': '{:.2f}'

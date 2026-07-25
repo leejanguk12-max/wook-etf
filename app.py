@@ -311,10 +311,16 @@ st.markdown("### 🌐 구성종목 가져오기 방식을 선택하세요")
 
 fetch_auto = st.button("🚀 자동 불러오기", use_container_width=True)
 
-# [수정] 겹치는 file_uploader 대신 깔끔하게 토글형 수동 업로드 기능 구현 (텍스트 겹침 100% 원천 차단)
+# [수정] 깨지는 file_uploader 대신 세션 상태를 활용한 깔끔한 토글형 업로더 구현 (자동 불러오기와 100% 동일한 디자인)
+if "show_uploader" not in st.session_state:
+    st.session_state.show_uploader = False
+
+if st.button("📁 엑셀 파일 수동 업로드하기", use_container_width=True):
+    st.session_state.show_uploader = not st.session_state.show_uploader
+
 uploaded_file = None
-with st.expander("📁 엑셀 파일 수동 업로드하기", expanded=False):
-    uploaded_file = st.file_uploader("엑셀 파일(.xlsx)을 선택하세요", type=["xlsx", "xls"], label_visibility="collapsed")
+if st.session_state.show_uploader:
+    uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 선택", type=["xlsx", "xls"], label_visibility="collapsed")
 
 df_input = None
 df_prev = None

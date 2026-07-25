@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import io
 import requests
+import re
 from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드(TradingView)", layout="wide")
 
 st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드 (TradingView)")
-st.markdown("네이버 금융의 **서울외환시장 마감 환율(오후 3:30)** 및 **426030 직전 종가**를 바탕으로 실시간 iNAV 예상 가격을 산출합니다.")
+st.markdown("네이버 금융의 **서울외환시장 마감 환율(오후 3:30)**과 **426030 종가**, 그리고 **타임폴리오 공식 사이트의 실시간 기준가**를 연동하여 산출합니다.")
 
 tab1, tab2 = st.tabs(["📁 엑셀 파일 업로드", "📋 웹페이지 텍스트 직접 붙여넣기"])
 
@@ -51,7 +52,7 @@ def get_naver_official_base_fx():
         pass
     return 0.0
 
-# 네이버 금융에서 타임나스닥100액티브(426030) 직전 정규장 마감 종가 수집 (주말/장마감 대응 보정)
+# 네이버 금융에서 타임나스닥100액티브(426030) 직전 정규장 마감 종가 수집
 def get_naver_etf_prev_close(ticker_code="426030"):
     try:
         url = f"https://finance.naver.com/item/main.naver?code={ticker_code}"
@@ -59,7 +60,7 @@ def get_naver_etf_prev_close(ticker_code="426030"):
         resp = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 1. 주말 및 장 마감 후에는 네이버 '현재가(no_today)'가 가장 최근 거래일(금요일) 마감가입니다.
+        # 1. 주말 및 장 마감 후에는 네이버 '현재가(no_today)'가 가장 최근 거래일 마감가입니다.
         today_tag = soup.select_one("p.no_today em span.blind")
         if today_tag:
             price_str = today_tag.text.strip().replace(",", "")
@@ -73,6 +74,74 @@ def get_naver_etf_prev_close(ticker_code="426030"):
     except Exception:
         pass
     return 0.0
+
+# 타임폴리오 공식 홈페이지(timeetf.co.kr) 정밀 파싱 (태그 기반 파싱)
+def get_timefolio_official_data(idx=2):
+    url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    result = {
+        "live_nav": 0.0,       # 실시간 기준가
+        "live_time": "",       # 실시간 기준시간
+        "base_nav": 0.0,       # 전일 기준가
+        "base_date": ""        # 전일 기준일자
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # '기준가' 섹션 상위 컨테이너 검색
+        boxes = soup.select("div.standard_price_box") or soup.select("ul.price_info li") or soup.find_all("div")
+        
+        for box in boxes:
+            box_text = box.get_text()
+            
+            # 1. 실시간 기준가 블록
+            if "실시간" in box_text and "기준가" in box_text:
+                # 금액
+                m_val = re.search(r'([\d,]+\.\d+)', box_text)
+                if m_val:
+                    result["live_nav"] = float(m_val.group(1).replace(",", ""))
+                # 시간 (예: 2026-07-25 03:24:03)
+                m_time = re.search(r'(\d{4}[-.\/] \d{2}[-.\/]\d{2}\s+\d{2}:\d{2}:\d{2}|\d{4}[-.\/]\d{2}[-.\/]\d{2}\s+\d{2}:\d{2}:\d{2})', box_text)
+                if m_time:
+                    result["live_time"] = m_time.group(1)
+            
+            # 2. 확정 기준가 블록 (실시간이라는 단어가 없는 일반 기준가)
+            elif "기준가" in box_text and "실시간" not in box_text:
+                # 금액
+                m_val = re.search(r'([\d,]+\.\d+)', box_text)
+                if m_val:
+                    result["base_nav"] = float(m_val.group(1).replace(",", ""))
+                # 일자 (예: 2026-07-23)
+                m_date = re.search(r'(\d{4}[-.\/]\d{2}[-.\/]\d{2})', box_text)
+                if m_date:
+                    result["base_date"] = m_date.group(1)
+
+        # 백업 방식: 전체 텍스트 구조 기반 파싱 (태그 방식 실패 시)
+        if result["base_nav"] == 0.0:
+            all_text = soup.get_text()
+            # '기준가 (원)' 바로 뒤에 나오는 숫자를 확정 NAV로 파싱
+            matches = re.findall(r'기준가\s*\(원\)\s*([\d,]+\.\d+)', all_text)
+            if len(matches) > 1:
+                result["base_nav"] = float(matches[1].replace(",", ""))
+            elif len(matches) == 1 and result["live_nav"] != float(matches[0].replace(",", "")):
+                result["base_nav"] = float(matches[0].replace(",", ""))
+
+            # 날짜 검색 (2026-07-23 등)
+            dates = re.findall(r'(\d{4}-\d{2}-\d{2})', all_text)
+            for d in dates:
+                if "03:" not in d and d not in result["live_time"]:
+                    result["base_date"] = d
+                    break
+
+    except Exception:
+        pass
+        
+    return result
 
 # 트레이딩뷰 직접 API 수집 함수 (주식 및 실시간 환율)
 def get_tradingview_direct_prices(symbols):
@@ -166,7 +235,7 @@ if df_input is not None and not df_input.empty:
         weight_col = st.selectbox("📌 '비중(%)' 열 선택", df_input.columns, index=default_weight_idx)
     
     if st.button("🚀 TradingView 주가 & 정밀 환율 실시간 가져오기 및 iNAV 계산"):
-        with st.spinner("서울외환시장 마감 환율 및 426030 직전 종가 수집 중..."):
+        with st.spinner("타임폴리오 공식 데이터 및 실시간 시세 수집 중..."):
             clean_df = df_input.dropna(subset=[ticker_col, weight_col]).copy()
             ticker_list = clean_df[ticker_col].tolist()
             
@@ -176,7 +245,10 @@ if df_input is not None and not df_input.empty:
             # 2. ETF (426030) 직전 정규장 마감 종가 수집
             etf_prev_close = get_naver_etf_prev_close("426030")
             
-            # 3. 트레이딩뷰 주가 및 실시간 환율 수집
+            # 3. 타임폴리오 공식 홈페이지 수치 정밀 파싱 (idx=2)
+            timefolio_data = get_timefolio_official_data(idx=2)
+            
+            # 4. 트레이딩뷰 주가 및 실시간 환율 수집
             batch_results, live_fx = get_tradingview_direct_prices(ticker_list)
             
             if official_base_fx == 0.0:
@@ -271,7 +343,6 @@ if df_input is not None and not df_input.empty:
                 
             with metric_col2:
                 if etf_prev_close > 0:
-                    # 실시간 변동률을 적용한 예상 iNAV 원화 가격 산출
                     estimated_inav_price = etf_prev_close * (1 + (total_inav_change / 100))
                     price_diff = estimated_inav_price - etf_prev_close
                     st.metric(
@@ -281,6 +352,20 @@ if df_input is not None and not df_input.empty:
                     )
                 else:
                     st.metric(label="💵 TIMEFOLIO 미국나스닥100액티브 예상 iNAV", value="종가 수집 불가")
+            
+            # 타임폴리오 공식 홈페이지 정보 카드 (정밀 표기)
+            if timefolio_data["live_nav"] > 0 or timefolio_data["base_nav"] > 0:
+                live_nav_str = f"{timefolio_data['live_nav']:,.2f} 원" if timefolio_data['live_nav'] > 0 else "수집 대기 중"
+                base_nav_str = f"{timefolio_data['base_nav']:,.2f} 원" if timefolio_data['base_nav'] > 0 else "수집 대기 중"
+                
+                time_info = f" ({timefolio_data['live_time']} 기준)" if timefolio_data['live_time'] else ""
+                date_info = f" ({timefolio_data['base_date']} 기준)" if timefolio_data['base_date'] else ""
+                
+                st.success(
+                    f"🏛️ **타임폴리오 공식 홈페이지 공시 정보**  \n"
+                    f"- **실시간 기준가**: **`{live_nav_str}`**{time_info}  \n"
+                    f"- **전일 확정 기준가**: **`{base_nav_str}`**{date_info}"
+                )
             
             # 환율 상세 박스
             st.info(

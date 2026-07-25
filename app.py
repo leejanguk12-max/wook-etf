@@ -79,7 +79,6 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
                 raw_name = cols[1] if len(cols) > 1 else ""
                 raw_weight = cols[-1] if len(cols) > 0 else ""
                 
-                # 평가금액(원) 컬럼 파싱 시도 (보통 뒤에서 두 번째나 세 번째에 위치)
                 amt_val = 0.0
                 for col_text in cols[1:-1]:
                     clean_txt = col_text.replace(',', '').strip()
@@ -461,7 +460,12 @@ if df_input is not None and not df_input.empty:
                 except ValueError:
                     pass
         
-        ticker_list = clean_df[ticker_col].tolist()
+        # [추가] 어제 파일에는 있었으나 오늘 파일에 없는 종목(편출 종목)도 비중 변화 분석에 포함시키기 위해 추출
+        all_known_tickers = set(clean_df[ticker_col].tolist())
+        if df_prev is not None and not df_prev.empty:
+            all_known_tickers.update(df_prev['종목코드'].tolist())
+            
+        ticker_list = list(all_known_tickers)
         
         official_base_fx = get_naver_official_base_fx()
         etf_prev_close = get_naver_etf_prev_close("426030")
@@ -482,19 +486,34 @@ if df_input is not None and not df_input.empty:
         
         cash_keywords = ["KRW", "CASH", "현금", "원화", "달러", "예금"]
         
+        # 오늘 보유 중인 종목 데이터 처리
+        curr_tickers_map = {}
         for index, row in clean_df.iterrows():
             raw_ticker = str(row[ticker_col]).strip()
             ticker = raw_ticker.split()[0].upper().replace("/", ".")
-            
             try:
                 weight = float(str(row[weight_col]).replace('%', '').replace(',', '').strip())
             except ValueError:
                 weight = 0.0
-            
+            curr_tickers_map[ticker] = (weight, row)
+
+        processed_tickers = set()
+
+        # 1. 오늘 보유 중이거나 어제 있었던 모든 종목 순회
+        for ticker in ticker_list:
+            if ticker in processed_tickers:
+                continue
+            processed_tickers.add(ticker)
+
+            weight = 0.0
+            row_data = None
+            if ticker in curr_tickers_map:
+                weight, row_data = curr_tickers_map[ticker]
+
             prev_w = prev_weight_map.get(ticker, None)
             if prev_w is None and any(kw in ticker for kw in cash_keywords):
                 prev_w = prev_weight_map.get("KRW", None)
-                
+
             w_diff_val = 0.0
             if prev_w is not None:
                 w_diff = weight - prev_w
@@ -508,10 +527,22 @@ if df_input is not None and not df_input.empty:
                 prev_w_str = "-"
                 w_diff_str = "✨ NEW"
                 w_diff_val = weight
-                new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
-            
+                if weight > 0:
+                    new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
+
+            # 편출(OUT)된 종목 처리
+            if weight == 0.0 and prev_w is not None and prev_w > 0:
+                w_diff = 0.0 - prev_w
+                w_diff_val = w_diff
+                prev_w_str = f"{prev_w:.2f}%"
+                w_diff_str = "🚪 OUT"
+
+            # 주가 변동률 및 가격 매핑
+            stock_change_pct = 0.0
+            live_price = 0.0
+
             if any(kw in ticker for kw in cash_keywords) or ticker == "KRW":
-                krw_amount = row.get("평가금액", 0.0) if "평가금액" in row and row["평가금액"] > 0 else 1.0
+                krw_amount = row_data.get("평가금액", 0.0) if row_data is not None and "평가금액" in row_data and row_data["평가금액"] > 0 else 1.0
                 live_data.append({
                     "종목코드": "KRW", 
                     "실시간 가격($)": krw_amount, 
@@ -554,7 +585,7 @@ if df_input is not None and not df_input.empty:
                     "비중변화(%p)": w_diff_str,
                     "비중변화_수치": w_diff_val
                 })
-        
+
         curr_tickers = set([str(r[ticker_col]).split()[0].upper() for _, r in clean_df.iterrows()])
         removed_stocks = []
         if df_prev is not None and not df_prev.empty:
@@ -660,7 +691,7 @@ if df_input is not None and not df_input.empty:
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================
-        # 🔄 비중 변화 TOP 10 (빈칸 제거 및 10개 행에 딱 맞춤)
+        # 🔄 비중 변화 TOP 10 (편출 종목도 변동폭 크면 포함되도록 수정)
         # =========================================================
         st.markdown("---")
         st.markdown("### 🔄 전일 대비 비중 변화 TOP 10")
@@ -687,7 +718,7 @@ if df_input is not None and not df_input.empty:
         st.dataframe(styled_top10, use_container_width=True, height=385)
 
         # =========================================================
-        # 📊 3. 종목별 실시간 전체 현황 표 (KRW 가격 뒤에 (원) 붙임)
+        # 📊 3. 종목별 실시간 전체 현황 표 (보유 중인 종목만 표시)
         # =========================================================
         st.markdown("---")
         st.markdown("### 📊 종목별 실시간 전체 현황")
@@ -695,14 +726,6 @@ if df_input is not None and not df_input.empty:
         display_full_df = result_df[result_df['당일비중(%)'] > 0].drop(columns=['비중변화_수치'], errors='ignore').reset_index(drop=True)
         display_full_df.index = range(1, len(display_full_df) + 1)
         
-        stiler_full = display_full_df.style
-        
-        if hasattr(stiler_full, "map"):
-            styled_full = stiler_full.map(color_change_pct, subset=['주가변동률(%)']).map(color_weight_change, subset=['비중변화(%p)'])
-        else:
-            styled_full = stiler_full.applymap(color_change_pct, subset=['주가변동률(%)']).applymap(color_weight_change, subset=['비중변화(%p)'])
-            
-        # KRW 행인 경우 숫자 뒤에 (원)을 붙여서 포맷팅
         def format_price_col(row):
             val = row['실시간 가격($)']
             code = row['종목코드']
@@ -713,7 +736,6 @@ if df_input is not None and not df_input.empty:
             else:
                 return f"{val:,.2f}"
 
-        # 포맷팅 적용을 위해 새로운 표시용 컬럼 생성
         display_full_df['실시간 가격(표시용)'] = display_full_df.apply(format_price_col, axis=1)
         display_full_df = display_full_df[['종목코드', '실시간 가격(표시용)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']]
         display_full_df.columns = ['종목코드', '실시간 가격($)', '주가변동률(%)', '당일비중(%)', '전일비중(%)', '비중변화(%p)']

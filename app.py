@@ -598,6 +598,8 @@ if df_input is not None and not df_input.empty:
             disp_txt_color = "#c62828" if disp_is_plus else "#0277bd"
             disp_arrow = "↑" if disp_is_plus else "↓"
             
+            nav_text_part = f"(NAV: {naver_nav:,.0f}원 기준)" if naver_nav > 0 else ""
+            
             st.markdown("<div style='font-size: 14px; color: #6f727b; margin-bottom: 2px;'>🏷️ 현재가격</div>", unsafe_allow_html=True)
             st.markdown(
                 f"<p style='font-size: 42px; font-weight: normal; margin-bottom: 0px; line-height: 1.2; color: #1f1f1f;'>"
@@ -609,7 +611,7 @@ if df_input is not None and not df_input.empty:
             disparity_badge = (
                 f"<div style='display: inline-block; background-color: {disp_bg}; color: {disp_txt_color}; "
                 f"padding: 2px 8px; border-radius: 12px; font-size: 14px; font-weight: 500; margin-top: 6px;'>"
-                f"{disp_arrow} 실시간 괴리율: {naver_disp:+.2f}% {f'(NAV: {naver_nav:,.0f}원 기준)' if nav_nav > 0 else ''}"
+                f"{disp_arrow} 실시간 괴리율: {naver_disp:+.2f}% {nav_text_part}"
                 f"</div>"
             )
             st.markdown(disparity_badge, unsafe_allow_html=True)

@@ -133,7 +133,6 @@ def get_naver_etf_market_data(ticker_code="426030"):
         prev_tag = soup.select_one("td.first em span.blind")
         if prev_tag: result["prev_close"] = float(prev_tag.text.strip().replace(",", ""))
 
-        # 네이버 금융 페이지 내 NAV 정밀 파싱
         page_html = resp.text
         nav_pattern = re.search(r'NAV[^<]*</t[dh]>\s*<t[dh][^>]*>\s*([\d,]+)\s*</t[dh]>', page_html, re.IGNORECASE)
         if nav_pattern:
@@ -156,7 +155,6 @@ def get_naver_etf_market_data(ticker_code="426030"):
                     if result["naver_nav"] > 0:
                         break
 
-        # 실시간 괴리율 계산 (현재가와 네이버 NAV가 모두 존재할 때)
         if result["current_price"] > 0 and result["naver_nav"] > 0:
             result["naver_disparity"] = ((result["current_price"] - result["naver_nav"]) / result["naver_nav"]) * 100
     except Exception: pass
@@ -347,7 +345,7 @@ if df_input is not None and not df_input.empty:
             stock_inav_change, total_inav_change = 0.0, 0.0
         
         # =========================================================
-        # 🏷️ 상단 현재가격 및 괴리율 카드 (항상 정상 출력)
+        # 🏷️ 상단 현재가격 및 괴리율 카드
         # =========================================================
         current_etf_price = naver_market["current_price"]
         price_change_pct = naver_market["price_change_pct"]
@@ -375,7 +373,7 @@ if df_input is not None and not df_input.empty:
                     <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
                     <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
-                        ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요. (미국 프리마켓 시작 후 iNAV 추정 제공)
+                        ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
                     </div>
                 </div>
                 """,
@@ -388,7 +386,7 @@ if df_input is not None and not df_input.empty:
                     <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
                     <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
-                        ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요. (미국 프리마켓 시작 후 iNAV 추정 제공)
+                        ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
                     </div>
                 </div>
                 """,
@@ -468,7 +466,7 @@ if df_input is not None and not df_input.empty:
             display_base_df['주가변동률(%)'] = 0.0
 
         # =========================================================
-        # 🔥 히트맵
+        # 🔥 히트맵 (컬러바 겹침 방지 및 모바일/PC -3~+3 스케일 눈금 명시적 고정)
         # =========================================================
         st.markdown("---")
         active_df = display_base_df[display_base_df['당일비중(%)'] > 0].copy()
@@ -478,10 +476,37 @@ if df_input is not None and not df_input.empty:
         
         fig_treemap = px.treemap(
             active_df, path=['표시명'], values='당일비중(%)', color='주가변동률(%)',
-            color_continuous_scale=[[0.0, '#4285F4'], [0.5, '#404552'], [1.0, '#FF1744']], range_color=[-3.0, 3.0]
+            color_continuous_scale=[
+                [0.0, '#4285F4'],   
+                [0.166, '#3B72E2'], 
+                [0.333, '#345FCF'], 
+                [0.5, '#404552'],   
+                [0.666, '#8B3A48'], 
+                [0.833, '#C83742'], 
+                [1.0, '#FF1744']    
+            ],
+            range_color=[-3.0, 3.0]
         )
+        
         fig_treemap.update_traces(textposition="middle center", selector=dict(type='treemap'))
-        fig_treemap.update_layout(margin=dict(t=5, l=5, r=5, b=5), height=600, uniformtext=dict(minsize=8, mode=False), coloraxis_colorbar=dict(title=dict(text="주가변동률(%)", side="top"), orientation="h", y=-0.1, x=0.5, xanchor="center", len=0.8))
+        
+        # 하단 여백(b=30) 확보 및 컬러바 위치(y=-0.15) 조정, -3~+3 눈금 명시적 고정
+        fig_treemap.update_layout(
+            margin=dict(t=5, l=5, r=5, b=30),
+            height=600,
+            uniformtext=dict(minsize=8, mode=False),
+            coloraxis_colorbar=dict(
+                title=dict(text="주가변동률(%)", side="top"),
+                orientation="h",
+                y=-0.15,
+                x=0.5,
+                xanchor="center",
+                len=0.85,
+                tickvals=[-3, -2, -1, 0, 1, 2, 3],
+                ticktext=["-3%", "-2%", "-1%", "0%", "+1%", "+2%", "+3%"]
+            )
+        )
+        
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================

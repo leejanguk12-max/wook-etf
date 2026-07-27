@@ -258,8 +258,60 @@ if uploaded_file is None:
         prev_pdf_date_str = get_prev_business_day(curr_dt)
         df_prev, _ = get_timefolio_constituents_by_date(idx=2, date_str=prev_pdf_date_str)
 else:
-    try: df_input = pd.read_excel(uploaded_file)
-    except Exception: pass
+    try:
+        raw_df_in = pd.read_excel(uploaded_file)
+        in_t_col, in_w_col, in_n_col, in_a_col = None, None, None, None
+        for col in raw_df_in.columns:
+            c_str = str(col)
+            if "코드" in c_str or "티커" in c_str or "Symbol" in c_str: in_t_col = col
+            elif "비중" in c_str or "Weight" in c_str: in_w_col = col
+            elif "명" in c_str or "Name" in c_str: in_n_col = col
+            elif "금액" in c_str or "평가" in c_str or "Amount" in c_str: in_a_col = col
+        if not in_t_col: in_t_col = raw_df_in.columns[0]
+        if not in_w_col: in_w_col = raw_df_in.columns[-1]
+
+        clean_in_data = []
+        for _, r in raw_df_in.iterrows():
+            t_val = str(r[in_t_col]).split()[0].strip().upper() if pd.notna(r[in_t_col]) else ""
+            n_val = str(r[in_n_col]) if in_n_col and pd.notna(r[in_n_col]) else ""
+            w_val_raw = str(r[in_w_col]).replace('%', '').replace(',', '').strip() if pd.notna(r[in_w_col]) else "0"
+            amt_val = float(str(r[in_a_col]).replace(',', '').strip()) if in_a_col and pd.notna(r[in_a_col]) and str(r[in_a_col]).replace('.','',1).isdigit() else 0.0
+            
+            if "현금" in n_val or "예금" in n_val or t_val in ["NAN", "NONE", "KRW", ""]:
+                t_val = "현금"
+            if t_val in ["NAN", "NONE", "열1"]: continue
+            try:
+                w_val = float(w_val_raw)
+                if 0 < w_val <= 100: clean_in_data.append({"종목코드": t_val, "비중": w_val, "평가금액": amt_val})
+            except ValueError: pass
+        df_input = pd.DataFrame(clean_in_data).drop_duplicates(subset=["종목코드"]).reset_index(drop=True)
+
+        if uploaded_file_prev is not None:
+            raw_df_prev = pd.read_excel(uploaded_file_prev)
+            p_t_col, p_w_col, p_n_col = None, None, None
+            for col in raw_df_prev.columns:
+                c_str = str(col)
+                if "코드" in c_str or "티커" in c_str or "Symbol" in c_str: p_t_col = col
+                elif "비중" in c_str or "Weight" in c_str: p_w_col = col
+                elif "명" in c_str or "Name" in c_str: p_n_col = col
+            if not p_t_col: p_t_col = raw_df_prev.columns[0]
+            if not p_w_col: p_w_col = raw_df_prev.columns[-1]
+
+            clean_prev_data = []
+            for _, r in raw_df_prev.iterrows():
+                t_val = str(r[p_t_col]).split()[0].strip().upper() if pd.notna(r[p_t_col]) else ""
+                n_val = str(r[p_n_col]) if p_n_col and pd.notna(r[p_n_col]) else ""
+                w_val_raw = str(r[p_w_col]).replace('%', '').replace(',', '').strip() if pd.notna(r[p_w_col]) else "0"
+                if "현금" in n_val or "예금" in n_val or t_val in ["NAN", "NONE", "KRW", ""]:
+                    t_val = "현금"
+                if t_val in ["NAN", "NONE", "열1"]: continue
+                try:
+                    w_val = float(w_val_raw)
+                    if 0 < w_val <= 100: clean_prev_data.append({"종목코드": t_val, "비중": w_val})
+                except ValueError: pass
+            df_prev = pd.DataFrame(clean_prev_data).drop_duplicates(subset=["종목코드"]).reset_index(drop=True)
+    except Exception as e:
+        st.error(f"엑셀 파일 읽기 오류: {e}")
 
 if df_input is not None and not df_input.empty:
     date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
@@ -466,7 +518,7 @@ if df_input is not None and not df_input.empty:
             display_base_df['주가변동률(%)'] = 0.0
 
         # =========================================================
-        # 🔥 히트맵 (컬러바 겹침 방지 및 모바일/PC -3~+3 스케일 눈금 명시적 고정)
+        # 🔥 히트맵
         # =========================================================
         st.markdown("---")
         active_df = display_base_df[display_base_df['당일비중(%)'] > 0].copy()
@@ -489,8 +541,6 @@ if df_input is not None and not df_input.empty:
         )
         
         fig_treemap.update_traces(textposition="middle center", selector=dict(type='treemap'))
-        
-        # 하단 여백(b=30) 확보 및 컬러바 위치(y=-0.15) 조정, -3~+3 눈금 명시적 고정
         fig_treemap.update_layout(
             margin=dict(t=5, l=5, r=5, b=30),
             height=600,
@@ -506,7 +556,6 @@ if df_input is not None and not df_input.empty:
                 ticktext=["-3%", "-2%", "-1%", "0%", "+1%", "+2%", "+3%"]
             )
         )
-        
         st.plotly_chart(fig_treemap, use_container_width=True)
 
         # =========================================================

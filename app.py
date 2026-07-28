@@ -209,7 +209,6 @@ def get_naver_official_base_fx():
 
         for ts, price in zip(timestamps, close_prices):
           if price is not None:
-            # Unix 타임스탬프를 한국시간(Asia/Seoul)으로 변환
             dt_kst = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Seoul"))
             curr_min = dt_kst.hour * 60 + dt_kst.minute
 
@@ -223,7 +222,6 @@ def get_naver_official_base_fx():
   except Exception:
     pass
 
-  # 백업: 1분 단위 데이터 파싱 실패 시 5분 단위 데이터 조회
   try:
     url_5m = "https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=5m&range=1d"
     resp_5m = requests.get(url_5m, headers=headers, timeout=5)
@@ -405,6 +403,33 @@ def get_tradingview_direct_prices(symbols):
   }
   headers = {"User-Agent": "Mozilla/5.0"}
 
+  # KST 시간 기준 미국 세션(프리장/본장/애프터마켓) 판단 로직
+  now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+  year = now_kst.year
+  march_1 = datetime(year, 3, 1, tzinfo=ZoneInfo("Asia/Seoul"))
+  second_sunday_march = 14 - (march_1.weekday() + 1) % 7
+  dst_start = datetime(
+      year, 3, second_sunday_march, 2, 0, tzinfo=ZoneInfo("Asia/Seoul")
+  )
+
+  nov_1 = datetime(year, 11, 1, tzinfo=ZoneInfo("Asia/Seoul"))
+  first_sunday_nov = 7 - nov_1.weekday() if nov_1.weekday() != 6 else 7
+  dst_end = datetime(
+      year, 11, first_sunday_nov, 2, 0, tzinfo=ZoneInfo("Asia/Seoul")
+  )
+
+  is_dst = dst_start <= now_kst < dst_end
+  curr_min = now_kst.hour * 60 + now_kst.minute
+
+  pre_start_min = (17 if is_dst else 18) * 60  # 17:00 / 18:00
+  reg_start_min = (22 * 60 + 30) if is_dst else (23 * 60 + 30)  # 22:30 / 23:30
+  reg_end_min = (5 if is_dst else 6) * 60  # 05:00 / 06:00
+
+  # 세션 구별
+  is_premarket_session = pre_start_min <= curr_min < reg_start_min
+  is_regular_session = (curr_min >= reg_start_min) or (curr_min < reg_end_min)
+  is_postmarket_session = reg_end_min <= curr_min < 9 * 60
+
   result_map, live_fx = {}, 0.0
   try:
     if tickers_to_query:
@@ -447,12 +472,29 @@ def get_tradingview_direct_prices(symbols):
               else 0.0
           )
 
-          if pre_close is not None and pre_close > 0:
-            close_price = pre_close
-            change_pct = pre_change if pre_change is not None else reg_change
-          elif post_close is not None and post_close > 0:
-            close_price = post_close
-            change_pct = post_change if post_change is not None else reg_change
+          # 본장 시간이면 무조건 본장 실시간 시세(close, change) 사용
+          if is_regular_session:
+            close_price = reg_close
+            change_pct = reg_change
+          # 프리장 시간이면 프리장 시세 사용
+          elif is_premarket_session:
+            if pre_close is not None and pre_close > 0:
+              close_price = pre_close
+              change_pct = pre_change if pre_change is not None else reg_change
+            else:
+              close_price = reg_close
+              change_pct = reg_change
+          # 애프터마켓 시간이면 장후 시세 사용
+          elif is_postmarket_session:
+            if post_close is not None and post_close > 0:
+              close_price = post_close
+              change_pct = (
+                  post_change if post_change is not None else reg_change
+              )
+            else:
+              close_price = reg_close
+              change_pct = reg_change
+          # 그 외 (장 휴장 등) 본장 종가 사용
           else:
             close_price = reg_close
             change_pct = reg_change

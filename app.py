@@ -187,39 +187,70 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """네이버 증권 일별 고시 API에서 서울외환시장 15시 30분 마감 고정 기준 환율을 가져옵니다."""
-  headers = {"User-Agent": "Mozilla/5.0"}
+  """네이버 증권 차트 데이터(JSON)에서 15시 30분에 가장 가까운 시간의 환율을 역추적합니다."""
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
+          " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0"
+          " Mobile/15E148 Safari/604.1"
+      ),
+      "Referer": "https://m.stock.naver.com/",
+  }
 
+  target_time_val = 15 * 60 + 30  # 15:30 (930분)
+  best_rate = 0.0
+  min_diff = float("inf")
+
+  # 1. 네이버 모바일 1일 차트 API 호출 (전체 고시 회차 데이터 포함)
   try:
-    # 1. 15:30 마감환율 전용 일자별 고시 API
-    url = "https://m.stock.naver.com/api/index/foreign/FX_USDKRW/daily?page=1&pageSize=5"
+    url = "https://m.stock.naver.com/api/chart/foreign/marketIndex/FX_USDKRW?type=day"
     resp = requests.get(url, headers=headers, timeout=5)
     if resp.status_code == 200:
-      daily_data = resp.json()
-
-      # API 리스트 형태 검증
+      chart_data = resp.json()
       items = (
-          daily_data
-          if isinstance(daily_data, list)
-          else daily_data.get("priceInfos", [])
+          chart_data
+          if isinstance(chart_data, list)
+          else chart_data.get("priceInfos", [])
       )
-      if items and len(items) > 0:
-        # 가장 최근 고정 마감가(15:30 기준) 추출
-        close_price_str = str(
-            items[0].get("closePrice", "")
-            or items[0].get("price", "")
-            or items[0].get("localTradedAtClosePrice", "")
-        ).replace(",", "")
-        if close_price_str.replace(".", "", 1).isdigit():
-          return float(close_price_str)
 
-    # 2. 백업: 하나은행 고시회차별 iframe에서 15:30 근접 회차 직접 탐색
+      for item in items:
+        # 시간 문자열 파싱 (예: "2026-07-28T15:30:00" 또는 "15:30")
+        traded_at = str(
+            item.get("localTradedAt", "")
+            or item.get("time", "")
+            or item.get("localTradedAtDate", "")
+        )
+        m_time = re.search(r"T?(\d{1,2}):(\d{2})", traded_at)
+
+        price = item.get("closePrice") or item.get("price")
+
+        if m_time and price is not None:
+          try:
+            h, m = int(m_time.group(1)), int(m_time.group(2))
+            rate_val = float(price)
+
+            current_time_val = h * 60 + m
+            diff = abs(current_time_val - target_time_val)
+
+            # 15시 30분에 가장 가까운 회차 선택
+            if diff < min_diff:
+              min_diff = diff
+              best_rate = rate_val
+          except (ValueError, TypeError):
+            pass
+
+      if best_rate > 0:
+        return best_rate
+  except Exception:
+    pass
+
+  # 2. 백업: 네이버 금융 회차별 고시 목록 HTML 테이블에서 15:30 근접 회차 역추적
+  try:
     url_iframe = "https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
-    resp_iframe = requests.get(url_iframe, headers=headers, timeout=5)
+    resp_iframe = requests.get(
+        url_iframe, headers={"User-Agent": "Mozilla/5.0"}, timeout=5
+    )
     soup = BeautifulSoup(resp_iframe.text, "html.parser")
-
-    target_time_val = 15 * 60 + 30
-    best_rate, min_diff = 0.0, float("inf")
 
     for row in soup.select("table.tbl_exchange tbody tr"):
       tds = row.select("td")
@@ -689,8 +720,7 @@ if df_input is not None and not df_input.empty:
     timefolio_data = get_timefolio_official_data(idx=2)
     batch_results, live_fx = get_tradingview_direct_prices(ticker_list)
 
-    if official_base_fx == 0.0:
-      official_base_fx = live_fx
+    # [수정] official_base_fx가 0일 때 live_fx로 덮어쓰던 강제 덮어쓰기 구문 제거
     usdkrw_change_pct = (
         ((live_fx - official_base_fx) / official_base_fx) * 100
         if official_base_fx > 0

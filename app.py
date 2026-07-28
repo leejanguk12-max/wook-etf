@@ -187,74 +187,66 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """네이버 금융 회차별 고시 API에서 15시 30분에 가장 가까운 시간의 환율을 정확히 역추적합니다."""
-  headers = {"User-Agent": "Mozilla/5.0"}
+  """네이버 금융 하나은행 회차별 고시 표에서 15시 30분에 가장 가까운 회차 환율을 정확히 역추적합니다."""
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+          " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      ),
+      "Referer": "https://finance.naver.com/marketindex/",
+  }
+
   target_time_val = 15 * 60 + 30  # 15:30 (930분)
 
-  # 1. 네이버 금융 회차별 고시 데이터 API
+  # 페이지 1~2를 순회하며 15:30 회차 탐색
+  for page in [1, 2]:
+    try:
+      url = f"https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page={page}"
+      resp = requests.get(url, headers=headers, timeout=5)
+
+      if resp.status_code == 200:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        rows = soup.select("table.tbl_exchange tbody tr")
+
+        best_rate = 0.0
+        min_diff = float("inf")
+
+        for row in rows:
+          tds = row.select("td")
+          if len(tds) >= 2:
+            time_txt = tds[0].get_text().strip()  # 예: "15:30"
+            rate_txt = (
+                tds[1].get_text().strip().replace(",", "")
+            )  # 예: "1,462.90"
+
+            m_time = re.search(r"(\d{1,2}):(\d{2})", time_txt)
+            if m_time:
+              try:
+                h, m = int(m_time.group(1)), int(m_time.group(2))
+                rate_val = float(rate_txt)
+
+                curr_min = h * 60 + m
+                diff = abs(curr_min - target_time_val)
+
+                if diff < min_diff:
+                  min_diff = diff
+                  best_rate = rate_val
+              except ValueError:
+                pass
+
+        if best_rate > 0:
+          return best_rate
+    except Exception:
+      pass
+
+  # 만약 위 역추적 실패 시 네이버 환율 메인 고시가 파싱
   try:
-    url = "https://finance.naver.com/marketindex/getExchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
-    resp = requests.get(url, headers=headers, timeout=5)
-
-    if resp.status_code == 200:
-      quote_list = resp.json()
-
-      best_rate = 0.0
-      min_diff = float("inf")
-
-      for item in quote_list:
-        time_str = str(
-            item.get("time", "")
-            or item.get("localTradedAt", "")
-            or item.get("datetime", "")
-        )
-        price_val = item.get("closePrice") or item.get("price")
-
-        m_time = re.search(r"(\d{1,2}):(\d{2})", time_str)
-        if m_time and price_val is not None:
-          try:
-            h, m = int(m_time.group(1)), int(m_time.group(2))
-            rate = float(str(price_val).replace(",", ""))
-
-            curr_min = h * 60 + m
-            diff = abs(curr_min - target_time_val)
-
-            if diff < min_diff:
-              min_diff = diff
-              best_rate = rate
-          except (ValueError, TypeError):
-            pass
-
-      if best_rate > 0:
-        return best_rate
-  except Exception:
-    pass
-
-  # 2. 백업: HTML 테이블 직접 파싱 (API 오류 시)
-  try:
-    url_html = "https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
-    resp_html = requests.get(url_html, headers=headers, timeout=5)
-    soup = BeautifulSoup(resp_html.text, "html.parser")
-
-    best_rate = 0.0
-    min_diff = float("inf")
-
-    for row in soup.select("table.tbl_exchange tbody tr"):
-      tds = row.select("td")
-      if len(tds) >= 2:
-        time_txt = tds[0].get_text().strip()
-        rate_txt = tds[1].get_text().strip().replace(",", "")
-
-        m_time = re.search(r"(\d{1,2}):(\d{2})", time_txt)
-        if m_time and rate_txt.replace(".", "", 1).isdigit():
-          h, m = int(m_time.group(1)), int(m_time.group(2))
-          diff = abs((h * 60 + m) - target_time_val)
-          if diff < min_diff:
-            min_diff = diff
-            best_rate = float(rate_txt)
-
-    if best_rate > 0:
-      return best_rate
+    url_main = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+    resp_main = requests.get(url_main, headers=headers, timeout=5)
+    soup_main = BeautifulSoup(resp_main.text, "html.parser")
+    price_tag = soup_main.select_one("p.no_today em")
+    if price_tag:
+      return float(price_tag.text.strip().replace(",", ""))
   except Exception:
     pass
 

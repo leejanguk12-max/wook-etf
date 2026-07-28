@@ -187,45 +187,54 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """네이버 증권 차트 전용 API(JSON)에서 15시 30분(서울외환시장 마감)에 가장 가까운 고시 회차 환율을 역추적하여 반환합니다."""
+  """네이버 증권 일별 고시 API에서 서울외환시장 15시 30분 마감 고정 기준 환율을 가져옵니다."""
   headers = {"User-Agent": "Mozilla/5.0"}
-  url = "https://m.stock.naver.com/api/chart/foreign/marketIndex/FX_USDKRW?type=day"
 
   try:
+    # 1. 15:30 마감환율 전용 일자별 고시 API
+    url = "https://m.stock.naver.com/api/index/foreign/FX_USDKRW/daily?page=1&pageSize=5"
     resp = requests.get(url, headers=headers, timeout=5)
     if resp.status_code == 200:
-      chart_data = resp.json()
-      data_list = (
-          chart_data
-          if isinstance(chart_data, list)
-          else chart_data.get("priceInfos", [])
+      daily_data = resp.json()
+
+      # API 리스트 형태 검증
+      items = (
+          daily_data
+          if isinstance(daily_data, list)
+          else daily_data.get("priceInfos", [])
       )
+      if items and len(items) > 0:
+        # 가장 최근 고정 마감가(15:30 기준) 추출
+        close_price_str = str(
+            items[0].get("closePrice", "")
+            or items[0].get("price", "")
+            or items[0].get("localTradedAtClosePrice", "")
+        ).replace(",", "")
+        if close_price_str.replace(".", "", 1).isdigit():
+          return float(close_price_str)
 
-      target_time_val = 15 * 60 + 30  # 15시 30분 (930분)
-      best_rate = 0.0
-      min_diff = float("inf")
+    # 2. 백업: 하나은행 고시회차별 iframe에서 15:30 근접 회차 직접 탐색
+    url_iframe = "https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
+    resp_iframe = requests.get(url_iframe, headers=headers, timeout=5)
+    soup = BeautifulSoup(resp_iframe.text, "html.parser")
 
-      for item in data_list:
-        traded_at = item.get("localTradedAt", "") or item.get("time", "")
-        m_time = re.search(r"T?(\d{2}):(\d{2})", traded_at)
-        price = item.get("closePrice") or item.get("price")
+    target_time_val = 15 * 60 + 30
+    best_rate, min_diff = 0.0, float("inf")
 
-        if m_time and price is not None:
-          try:
-            h, m = int(m_time.group(1)), int(m_time.group(2))
-            rate_val = float(price)
+    for row in soup.select("table.tbl_exchange tbody tr"):
+      tds = row.select("td")
+      if len(tds) >= 2:
+        m_time = re.search(r"(\d{1,2}):(\d{2})", tds[0].get_text().strip())
+        rate_str = tds[1].get_text().strip().replace(",", "")
+        if m_time and rate_str.replace(".", "", 1).isdigit():
+          h, m = int(m_time.group(1)), int(m_time.group(2))
+          diff = abs((h * 60 + m) - target_time_val)
+          if diff < min_diff:
+            min_diff = diff
+            best_rate = float(rate_str)
 
-            current_time_val = h * 60 + m
-            diff = abs(current_time_val - target_time_val)
-
-            if diff < min_diff:
-              min_diff = diff
-              best_rate = rate_val
-          except (ValueError, TypeError):
-            pass
-
-      if best_rate > 0:
-        return best_rate
+    if best_rate > 0:
+      return best_rate
   except Exception:
     pass
 

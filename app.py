@@ -187,55 +187,41 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """네이버 증권 차트 데이터(JSON)에서 15시 30분에 가장 가까운 시간의 환율을 역추적합니다."""
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
-          " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0"
-          " Mobile/15E148 Safari/604.1"
-      ),
-      "Referer": "https://m.stock.naver.com/",
-  }
-
+  """네이버 금융 회차별 고시 API에서 15시 30분에 가장 가까운 시간의 환율을 정확히 역추적합니다."""
+  headers = {"User-Agent": "Mozilla/5.0"}
   target_time_val = 15 * 60 + 30  # 15:30 (930분)
-  best_rate = 0.0
-  min_diff = float("inf")
 
-  # 1. 네이버 모바일 1일 차트 API 호출 (전체 고시 회차 데이터 포함)
+  # 1. 네이버 금융 회차별 고시 데이터 API
   try:
-    url = "https://m.stock.naver.com/api/chart/foreign/marketIndex/FX_USDKRW?type=day"
+    url = "https://finance.naver.com/marketindex/getExchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
     resp = requests.get(url, headers=headers, timeout=5)
+
     if resp.status_code == 200:
-      chart_data = resp.json()
-      items = (
-          chart_data
-          if isinstance(chart_data, list)
-          else chart_data.get("priceInfos", [])
-      )
+      quote_list = resp.json()
 
-      for item in items:
-        # 시간 문자열 파싱 (예: "2026-07-28T15:30:00" 또는 "15:30")
-        traded_at = str(
-            item.get("localTradedAt", "")
-            or item.get("time", "")
-            or item.get("localTradedAtDate", "")
+      best_rate = 0.0
+      min_diff = float("inf")
+
+      for item in quote_list:
+        time_str = str(
+            item.get("time", "")
+            or item.get("localTradedAt", "")
+            or item.get("datetime", "")
         )
-        m_time = re.search(r"T?(\d{1,2}):(\d{2})", traded_at)
+        price_val = item.get("closePrice") or item.get("price")
 
-        price = item.get("closePrice") or item.get("price")
-
-        if m_time and price is not None:
+        m_time = re.search(r"(\d{1,2}):(\d{2})", time_str)
+        if m_time and price_val is not None:
           try:
             h, m = int(m_time.group(1)), int(m_time.group(2))
-            rate_val = float(price)
+            rate = float(str(price_val).replace(",", ""))
 
-            current_time_val = h * 60 + m
-            diff = abs(current_time_val - target_time_val)
+            curr_min = h * 60 + m
+            diff = abs(curr_min - target_time_val)
 
-            # 15시 30분에 가장 가까운 회차 선택
             if diff < min_diff:
               min_diff = diff
-              best_rate = rate_val
+              best_rate = rate
           except (ValueError, TypeError):
             pass
 
@@ -244,25 +230,28 @@ def get_naver_official_base_fx():
   except Exception:
     pass
 
-  # 2. 백업: 네이버 금융 회차별 고시 목록 HTML 테이블에서 15:30 근접 회차 역추적
+  # 2. 백업: HTML 테이블 직접 파싱 (API 오류 시)
   try:
-    url_iframe = "https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
-    resp_iframe = requests.get(
-        url_iframe, headers={"User-Agent": "Mozilla/5.0"}, timeout=5
-    )
-    soup = BeautifulSoup(resp_iframe.text, "html.parser")
+    url_html = "https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page=1"
+    resp_html = requests.get(url_html, headers=headers, timeout=5)
+    soup = BeautifulSoup(resp_html.text, "html.parser")
+
+    best_rate = 0.0
+    min_diff = float("inf")
 
     for row in soup.select("table.tbl_exchange tbody tr"):
       tds = row.select("td")
       if len(tds) >= 2:
-        m_time = re.search(r"(\d{1,2}):(\d{2})", tds[0].get_text().strip())
-        rate_str = tds[1].get_text().strip().replace(",", "")
-        if m_time and rate_str.replace(".", "", 1).isdigit():
+        time_txt = tds[0].get_text().strip()
+        rate_txt = tds[1].get_text().strip().replace(",", "")
+
+        m_time = re.search(r"(\d{1,2}):(\d{2})", time_txt)
+        if m_time and rate_txt.replace(".", "", 1).isdigit():
           h, m = int(m_time.group(1)), int(m_time.group(2))
           diff = abs((h * 60 + m) - target_time_val)
           if diff < min_diff:
             min_diff = diff
-            best_rate = float(rate_str)
+            best_rate = float(rate_txt)
 
     if best_rate > 0:
       return best_rate
@@ -720,7 +709,6 @@ if df_input is not None and not df_input.empty:
     timefolio_data = get_timefolio_official_data(idx=2)
     batch_results, live_fx = get_tradingview_direct_prices(ticker_list)
 
-    # [수정] official_base_fx가 0일 때 live_fx로 덮어쓰던 강제 덮어쓰기 구문 제거
     usdkrw_change_pct = (
         ((live_fx - official_base_fx) / official_base_fx) * 100
         if official_base_fx > 0

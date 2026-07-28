@@ -187,55 +187,48 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """네이버 금융 회차별 고시 내역에서 15시 30분(장 마감)에 가장 근접한 회차의 매매기준율을 역추적하여 가져옵니다."""
+  """네이버 증권 차트 전용 API(JSON)에서 15시 30분(서울외환시장 마감)에 가장 가까운 고시 회차 환율을 역추적하여 반환합니다."""
+  headers = {"User-Agent": "Mozilla/5.0"}
+  url = "https://m.stock.naver.com/api/chart/foreign/marketIndex/FX_USDKRW?type=day"
+
   try:
-    # 1. 네이버 금융 FX_USDKRW 회차별 고시 목록 조회
-    url = "https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW"
-    resp = requests.get(
-        url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5
-    )
-    soup = BeautifulSoup(resp.text, "html.parser")
+    resp = requests.get(url, headers=headers, timeout=5)
+    if resp.status_code == 200:
+      chart_data = resp.json()
+      data_list = (
+          chart_data
+          if isinstance(chart_data, list)
+          else chart_data.get("priceInfos", [])
+      )
 
-    target_time_val = 15 * 60 + 30  # 15시 30분을 분 단위(930분)로 변환
-    best_rate = 0.0
-    min_diff = float("inf")
+      target_time_val = 15 * 60 + 30  # 15시 30분 (930분)
+      best_rate = 0.0
+      min_diff = float("inf")
 
-    rows = soup.select("table.tbl_exchange tbody tr")
-    for row in rows:
-      tds = row.select("td")
-      if len(tds) >= 2:
-        # 고시 시간 예: "15:30" 또는 "15:30:00"
-        time_text = tds[0].get_text().strip()
-        # 매매기준율 예: "1,380.50"
-        rate_text = tds[1].get_text().strip().replace(",", "")
+      for item in data_list:
+        traded_at = item.get("localTradedAt", "") or item.get("time", "")
+        m_time = re.search(r"T?(\d{2}):(\d{2})", traded_at)
+        price = item.get("closePrice") or item.get("price")
 
-        m_time = re.search(r"(\d{1,2}):(\d{2})", time_text)
-        if m_time and rate_text.replace(".", "", 1).isdigit():
-          h, m = int(m_time.group(1)), int(m_time.group(2))
-          current_time_val = h * 60 + m
-          diff = abs(current_time_val - target_time_val)
+        if m_time and price is not None:
+          try:
+            h, m = int(m_time.group(1)), int(m_time.group(2))
+            rate_val = float(price)
 
-          # 15시 30분에 가장 가까운 회차 선택
-          if diff < min_diff:
-            min_diff = diff
-            best_rate = float(rate_text)
+            current_time_val = h * 60 + m
+            diff = abs(current_time_val - target_time_val)
 
-    if best_rate > 0:
-      return best_rate
+            if diff < min_diff:
+              min_diff = diff
+              best_rate = rate_val
+          except (ValueError, TypeError):
+            pass
 
-    # 역추적 실패 시 기본 상세페이지의 당일 고시가(최종 고시가) fallback
-    resp_fallback = requests.get(
-        "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW",
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=5,
-    )
-    price_tag = BeautifulSoup(resp_fallback.text, "html.parser").select_one(
-        "p.no_today em"
-    )
-    if price_tag:
-      return float(price_tag.text.strip().replace(",", ""))
+      if best_rate > 0:
+        return best_rate
   except Exception:
     pass
+
   return 0.0
 
 
@@ -371,7 +364,6 @@ def get_tradingview_direct_prices(symbols):
       f"{ex}:{sym}" for sym in clean_symbols for ex in ["NASDAQ", "NYSE", "AMEX"]
   ]
 
-  # 프리장(premarket) / 애프터마켓(postmarket) / 정규장 세분화 조회 필드
   payload_stocks = {
       "symbols": {"tickers": tickers_to_query},
       "columns": [
@@ -431,7 +423,6 @@ def get_tradingview_direct_prices(symbols):
               else 0.0
           )
 
-          # 우선순위: 프리장 시세 -> 애프터마켓 시세 -> 정규장 시세
           if pre_close is not None and pre_close > 0:
             close_price = pre_close
             change_pct = pre_change if pre_change is not None else reg_change

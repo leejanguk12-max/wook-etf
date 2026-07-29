@@ -403,7 +403,6 @@ def get_tradingview_direct_prices(symbols):
   }
   headers = {"User-Agent": "Mozilla/5.0"}
 
-  # KST 시간 기준 미국 세션(프리장/본장/애프터마켓) 판단 로직
   now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
   year = now_kst.year
   march_1 = datetime(year, 3, 1, tzinfo=ZoneInfo("Asia/Seoul"))
@@ -421,11 +420,10 @@ def get_tradingview_direct_prices(symbols):
   is_dst = dst_start <= now_kst < dst_end
   curr_min = now_kst.hour * 60 + now_kst.minute
 
-  pre_start_min = (17 if is_dst else 18) * 60  # 17:00 / 18:00
-  reg_start_min = (22 * 60 + 30) if is_dst else (23 * 60 + 30)  # 22:30 / 23:30
-  reg_end_min = (5 if is_dst else 6) * 60  # 05:00 / 06:00
+  pre_start_min = (17 if is_dst else 18) * 60
+  reg_start_min = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
+  reg_end_min = (5 if is_dst else 6) * 60
 
-  # 세션 구별
   is_premarket_session = pre_start_min <= curr_min < reg_start_min
   is_regular_session = (curr_min >= reg_start_min) or (curr_min < reg_end_min)
   is_postmarket_session = reg_end_min <= curr_min < 9 * 60
@@ -472,11 +470,9 @@ def get_tradingview_direct_prices(symbols):
               else 0.0
           )
 
-          # 본장 시간이면 무조건 본장 실시간 시세(close, change) 사용
           if is_regular_session:
             close_price = reg_close
             change_pct = reg_change
-          # 프리장 시간이면 프리장 시세 사용
           elif is_premarket_session:
             if pre_close is not None and pre_close > 0:
               close_price = pre_close
@@ -484,7 +480,6 @@ def get_tradingview_direct_prices(symbols):
             else:
               close_price = reg_close
               change_pct = reg_change
-          # 애프터마켓 시간이면 장후 시세 사용
           elif is_postmarket_session:
             if post_close is not None and post_close > 0:
               close_price = post_close
@@ -494,7 +489,6 @@ def get_tradingview_direct_prices(symbols):
             else:
               close_price = reg_close
               change_pct = reg_change
-          # 그 외 (장 휴장 등) 본장 종가 사용
           else:
             close_price = reg_close
             change_pct = reg_change
@@ -899,11 +893,18 @@ if df_input is not None and not df_input.empty:
         get_market_session_status()
     )
 
+    # 본장 시작 후 첫 15분간(22:30~22:45 / 23:30~23:45) 15분 지연 대기시간 판단
+    curr_min_val = now_kst.hour * 60 + now_kst.minute
+    reg_start_min_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
+    is_us_delay_buffer = reg_start_min_val <= curr_min_val < (
+        reg_start_min_val + 15
+    )
+
     if is_korean_market_hours:
       st.markdown(
           """
                 <div style="margin-bottom: 10px;">
-                    <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
+                    <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률(15분 지연)</div>
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
                     <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
                         ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
@@ -929,7 +930,7 @@ if df_input is not None and not df_input.empty:
       st.markdown(
           """
                 <div style="margin-bottom: 10px;">
-                    <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
+                    <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률(15분 지연)</div>
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
                     <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
                         ℹ️ 미국 프리마켓 시작 시각(서머타임 적용 시 오후 5시)부터 실시간 추정치가 제공됩니다.
@@ -946,6 +947,34 @@ if df_input is not None and not df_input.empty:
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
                     <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
                         ℹ️ 미국 프리마켓 시작 시각(서머타임 적용 시 오후 5시)부터 실시간 추정치가 제공됩니다.
+                    </div>
+                </div>
+                """,
+          unsafe_allow_html=True,
+      )
+    elif is_us_delay_buffer:
+      # 본장 개장 직후 15분간 대기 안내 멘트 카드
+      next_time_str = "22:45" if is_dst else "23:45"
+      st.markdown(
+          f"""
+                <div style="margin-bottom: 10px;">
+                    <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률(15분 지연)</div>
+                    <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">본장 15분 지연데이터 대기 중 ⏳</div>
+                    <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
+                        ℹ️ 미국 본장 개장 후 15분간은 지연 시세 반영 대기 시간입니다. ({next_time_str}부터 실시간 추정치 제공)
+                    </div>
+                </div>
+                """,
+          unsafe_allow_html=True,
+      )
+      st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+      st.markdown(
+          f"""
+                <div style="margin-bottom: 10px;">
+                    <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
+                    <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">본장 15분 지연데이터 대기 중 ⏳</div>
+                    <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
+                        ℹ️ 미국 본장 개장 후 15분간은 지연 시세 반영 대기 시간입니다. ({next_time_str}부터 실시간 추정치 제공)
                     </div>
                 </div>
                 """,
@@ -987,7 +1016,7 @@ if df_input is not None and not df_input.empty:
       )
 
       render_custom_metric(
-          "📈 실시간 iNAV 추정 총 변동률",
+          "📈 실시간 iNAV 추정 총 변동률(15분 지연)",
           f"{total_inav_change:+.2f}%",
           delta_detail_html,
           total_is_plus,

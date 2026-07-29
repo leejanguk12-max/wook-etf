@@ -705,7 +705,7 @@ else:
 
 if df_input is not None and not df_input.empty:
   date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
-  st.success(f"✅ 총 {len(df_input)}개 종목 데이터 로드 완료!{date_info_msg}")
+  st.success(f"✅ 총 {len(df_input)}개 종목 로드 완료!{date_info_msg}")
 
   with st.spinner("실시간 시세 연산 중..."):
     clean_df = df_input.dropna(subset=["종목코드", "비중"]).copy()

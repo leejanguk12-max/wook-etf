@@ -10,7 +10,7 @@ import streamlit as st
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
-st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
+st.title("🎯 타임폴리오 액티브")
 st.markdown(
     "타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**,"
     " **실시간 기준가**를 연동합니다."

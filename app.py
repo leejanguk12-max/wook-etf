@@ -893,7 +893,6 @@ if df_input is not None and not df_input.empty:
         get_market_session_status()
     )
 
-    # 본장 시작 후 첫 15분간(22:30~22:45 / 23:30~23:45) 15분 지연 대기시간 판단
     curr_min_val = now_kst.hour * 60 + now_kst.minute
     reg_start_min_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
     is_us_delay_buffer = reg_start_min_val <= curr_min_val < (
@@ -953,7 +952,6 @@ if df_input is not None and not df_input.empty:
           unsafe_allow_html=True,
       )
     elif is_us_delay_buffer:
-      # 본장 개장 직후 15분간 대기 안내 멘트 카드
       next_time_str = "22:45" if is_dst else "23:45"
       st.markdown(
           f"""
@@ -1005,7 +1003,6 @@ if df_input is not None and not df_input.empty:
 
       total_is_plus = total_inav_change >= 0
       main_theme_color = "#c62828" if total_is_plus else "#0277bd"
-      arrow_char = "↑" if total_is_plus else "↓"
 
       delta_detail_html = (
           f"주가: <span style='color: {main_theme_color};"
@@ -1039,7 +1036,6 @@ if df_input is not None and not df_input.empty:
         )
         diff_val = estimated_inav_price - base_nav_reference
         diff_is_plus = diff_val >= 0
-        diff_arrow = "↑" if diff_is_plus else "↓"
 
         if current_etf_price > 0:
           actual_vs_inav_pct = (
@@ -1054,10 +1050,11 @@ if df_input is not None and not df_input.empty:
         else:
           inav_extra_info = ""
 
+        # [수정] render_custom_metric 내부의 기본 arrow와 중복되던 diff_arrow 제거로 화살표 1개 출력 보장
         render_custom_metric(
             "💵 나스닥100액티브(426030) 예상 iNAV",
             f"{estimated_inav_price:,.0f} 원",
-            f"{diff_arrow} {diff_val:+,.0f} 원 (기준 iNAV: {base_nav_reference:,.0f}원)",
+            f"{diff_val:+,.0f} 원 (기준 iNAV: {base_nav_reference:,.0f}원)",
             diff_is_plus,
             extra_info=inav_extra_info,
         )

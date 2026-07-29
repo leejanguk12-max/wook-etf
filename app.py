@@ -10,9 +10,9 @@ import streamlit as st
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
-st.title("🎯 타임폴리오 액티브")
+st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
 st.markdown(
-    "타임폴리오 공식 홈페이지에서 나스닥100 액티브 **전체 구성종목** 및 **전일 대비 비중 변화**,"
+    "타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**,"
     " **실시간 기준가**를 연동합니다."
 )
 
@@ -391,8 +391,6 @@ def get_tradingview_direct_prices(symbols):
       "columns": [
           "premarket_close",
           "premarket_change",
-          "postmarket_close",
-          "postmarket_change",
           "close",
           "change",
       ],
@@ -422,11 +420,9 @@ def get_tradingview_direct_prices(symbols):
 
   pre_start_min = (17 if is_dst else 18) * 60
   reg_start_min = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
-  reg_end_min = (5 if is_dst else 6) * 60
 
+  # 세션 구별 (애프터마켓 제외: 본장 개장 시점부터 다음날 프리장 시작 시점까지 본장 시세 적용)
   is_premarket_session = pre_start_min <= curr_min < reg_start_min
-  is_regular_session = (curr_min >= reg_start_min) or (curr_min < reg_end_min)
-  is_postmarket_session = reg_end_min <= curr_min < 9 * 60
 
   result_map, live_fx = {}, 0.0
   try:
@@ -437,7 +433,7 @@ def get_tradingview_direct_prices(symbols):
       if resp_stocks.status_code == 200:
         for item in resp_stocks.json().get("data", []):
           ticker_clean = item.get("s", "").split(":")[-1]
-          values = item.get("d", [None] * 6)
+          values = item.get("d", [None] * 4)
 
           pre_close = (
               values[0]
@@ -449,43 +445,22 @@ def get_tradingview_direct_prices(symbols):
               if len(values) > 1 and values[1] is not None
               else None
           )
-          post_close = (
+          reg_close = (
               values[2]
               if len(values) > 2 and values[2] is not None
-              else None
-          )
-          post_change = (
-              values[3]
-              if len(values) > 3 and values[3] is not None
-              else None
-          )
-          reg_close = (
-              values[4]
-              if len(values) > 4 and values[4] is not None
               else 0.0
           )
           reg_change = (
-              values[5]
-              if len(values) > 5 and values[5] is not None
+              values[3]
+              if len(values) > 3 and values[3] is not None
               else 0.0
           )
 
-          if is_regular_session:
-            close_price = reg_close
-            change_pct = reg_change
-          elif is_premarket_session:
+          # 프리장 시간에만 프리장 시세를 사용하고, 본장 시작 이후부터는 한국장 개장 전까지 무조건 본장 마감/실시간 시세(reg_close, reg_change) 적용
+          if is_premarket_session:
             if pre_close is not None and pre_close > 0:
               close_price = pre_close
               change_pct = pre_change if pre_change is not None else reg_change
-            else:
-              close_price = reg_close
-              change_pct = reg_change
-          elif is_postmarket_session:
-            if post_close is not None and post_close > 0:
-              close_price = post_close
-              change_pct = (
-                  post_change if post_change is not None else reg_change
-              )
             else:
               close_price = reg_close
               change_pct = reg_change
@@ -705,7 +680,7 @@ else:
 
 if df_input is not None and not df_input.empty:
   date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
-  st.success(f"✅ 총 {len(df_input)}개 종목 로드 완료!{date_info_msg}")
+  st.success(f"✅ 총 {len(df_input)}개 종목 데이터 로드 완료!{date_info_msg}")
 
   with st.spinner("실시간 시세 연산 중..."):
     clean_df = df_input.dropna(subset=["종목코드", "비중"]).copy()
@@ -1050,7 +1025,6 @@ if df_input is not None and not df_input.empty:
         else:
           inav_extra_info = ""
 
-        # [수정] render_custom_metric 내부의 기본 arrow와 중복되던 diff_arrow 제거로 화살표 1개 출력 보장
         render_custom_metric(
             "💵 나스닥100액티브(426030) 예상 iNAV",
             f"{estimated_inav_price:,.0f} 원",

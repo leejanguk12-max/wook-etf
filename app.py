@@ -187,12 +187,19 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """야후 파이낸스(USDKRW=X) 1분 단위 분봉 API에서 한국시간(KST) 기준 15:30:00에 가장 가까운 환율을 역추적합니다."""
+  """야후 파이낸스(USDKRW=X) 최근 5일치 분봉 데이터에서 한국시간(KST) 기준 가장 최근 15:30:00 마감 환율을 역추적합니다."""
   headers = {"User-Agent": "Mozilla/5.0"}
-  target_time_val = 15 * 60 + 30  # 15시 30분 (930분)
+  now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+
+  # 장 개장 전(09:00 전)이면 직전 영업일의 15:30 환율을 타겟팅
+  if now_kst.hour < 9:
+    target_dt_str = get_prev_business_day(now_kst)
+  else:
+    target_dt_str = now_kst.strftime("%Y-%m-%d")
 
   try:
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=1m&range=1d"
+    # 5일치 5분봉 데이터를 불러와 15시 30분 캔들을 확실하게 탐색
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=5m&range=5d"
     resp = requests.get(url, headers=headers, timeout=5)
 
     if resp.status_code == 200:
@@ -204,47 +211,28 @@ def get_naver_official_base_fx():
         indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
         close_prices = indicators.get("close", [])
 
+        target_time_val = 15 * 60 + 30  # 15:30 (930분)
         best_rate = 0.0
         min_diff = float("inf")
 
         for ts, price in zip(timestamps, close_prices):
           if price is not None:
             dt_kst = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Seoul"))
-            curr_min = dt_kst.hour * 60 + dt_kst.minute
+            date_str = dt_kst.strftime("%Y-%m-%d")
 
-            diff = abs(curr_min - target_time_val)
-            if diff < min_diff:
-              min_diff = diff
-              best_rate = float(price)
+            # 타겟 일자 이하의 날짜 중 15:30분과 가장 가까운 분봉 추출
+            if date_str <= target_dt_str:
+              curr_min = dt_kst.hour * 60 + dt_kst.minute
+              diff = abs(curr_min - target_time_val)
 
-        if best_rate > 0:
-          return best_rate
-  except Exception:
-    pass
-
-  try:
-    url_5m = "https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=5m&range=1d"
-    resp_5m = requests.get(url_5m, headers=headers, timeout=5)
-    if resp_5m.status_code == 200:
-      json_data = resp_5m.json()
-      result = json_data.get("chart", {}).get("result", [])
-      if result and len(result) > 0:
-        timestamps = result[0].get("timestamp", [])
-        close_prices = (
-            result[0]
-            .get("indicators", {})
-            .get("quote", [{}])[0]
-            .get("close", [])
-        )
-
-        best_rate, min_diff = 0.0, float("inf")
-        for ts, price in zip(timestamps, close_prices):
-          if price is not None:
-            dt_kst = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Seoul"))
-            diff = abs((dt_kst.hour * 60 + dt_kst.minute) - target_time_val)
-            if diff < min_diff:
-              min_diff = diff
-              best_rate = float(price)
+              # 날짜가 타겟일과 일치하면 최우선 적용
+              if date_str == target_dt_str:
+                if diff < min_diff:
+                  min_diff = diff
+                  best_rate = float(price)
+              # 일치하는 날짜가 아직 없으면 가장 가까운 과거 마감일 환율 채택
+              elif best_rate == 0.0 and diff < 30:
+                best_rate = float(price)
 
         if best_rate > 0:
           return best_rate
@@ -255,6 +243,7 @@ def get_naver_official_base_fx():
 
 
 def get_naver_etf_market_data(ticker_code="426030"):
+  """네이버 금융에서 ETF 현재가 및 전일대비 변동률(%)을 크롤링합니다."""
   result = {
       "current_price": 0.0,
       "prev_close": 0.0,
@@ -274,21 +263,25 @@ def get_naver_etf_market_data(ticker_code="426030"):
     if today_tag:
       result["current_price"] = float(today_tag.text.strip().replace(",", ""))
 
-    exday_text = (soup.select_one("div.rate_info") or soup).get_text()
-    is_minus = bool(
-        soup.select_one("p.no_exday em span.ico.down")
-        or soup.select_one("em.no_down")
-        or "하락" in exday_text
-    )
+    # 네이버 ETF 전일대비 변동률 파싱 조건 강화
+    rate_info = soup.select_one("div.rate_info")
+    if rate_info:
+      exday_text = rate_info.get_text()
 
-    m_pct = re.search(r"([\+\-]?\d+\.\d+)\s*%", exday_text)
-    if m_pct:
-      val = float(m_pct.group(1))
-      result["price_change_pct"] = (
-          -val
-          if (is_minus and val > 0 and "-" not in m_pct.group(1))
-          else val
+      is_minus = bool(
+          rate_info.select_one("p.no_exday em span.ico.down")
+          or rate_info.select_one("em.no_down")
+          or "하락" in exday_text
       )
+
+      m_pct = re.search(r"([\+\-]?\d+\.\d+)\s*%", exday_text)
+      if m_pct:
+        val = float(m_pct.group(1))
+        result["price_change_pct"] = (
+            -val
+            if (is_minus and val > 0 and "-" not in m_pct.group(1))
+            else val
+        )
 
     prev_tag = soup.select_one("td.first em span.blind")
     if prev_tag:
@@ -421,7 +414,6 @@ def get_tradingview_direct_prices(symbols):
   pre_start_min = (17 if is_dst else 18) * 60
   reg_start_min = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
 
-  # 세션 구별 (애프터마켓 제외: 본장 개장 시점부터 다음날 프리장 시작 시점까지 본장 시세 적용)
   is_premarket_session = pre_start_min <= curr_min < reg_start_min
 
   result_map, live_fx = {}, 0.0
@@ -456,7 +448,6 @@ def get_tradingview_direct_prices(symbols):
               else 0.0
           )
 
-          # 프리장 시간에만 프리장 시세를 사용하고, 본장 시작 이후부터는 한국장 개장 전까지 무조건 본장 마감/실시간 시세(reg_close, reg_change) 적용
           if is_premarket_session:
             if pre_close is not None and pre_close > 0:
               close_price = pre_close

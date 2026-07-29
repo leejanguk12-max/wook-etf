@@ -10,9 +10,9 @@ import streamlit as st
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
-st.title("🎯 타임폴리오 액티브 ETF 실시간 iNAV 대시보드")
+st.title("🎯 타임폴리오 액티브")
 st.markdown(
-    "타임폴리오 공식 홈페이지의 **전체 구성종목(PDF)** 및 **전일 대비 비중 변화**,"
+    "타임폴리오 공식 홈페이지에서 나스닥100 액티브 **전체 구성종목** 및 **전일 대비 비중 변화**,"
     " **실시간 기준가**를 연동합니다."
 )
 
@@ -680,7 +680,7 @@ else:
 
 if df_input is not None and not df_input.empty:
   date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
-  st.success(f"✅ 총 {len(df_input)}개 종목 데이터 로드 완료!{date_info_msg}")
+  st.success(f"✅ 총 {len(df_input)}개 종목 로드 완료!{date_info_msg}")
 
   with st.spinner("실시간 시세 연산 중..."):
     clean_df = df_input.dropna(subset=["종목코드", "비중"]).copy()

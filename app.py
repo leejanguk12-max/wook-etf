@@ -27,12 +27,14 @@ st.markdown("---")
 
 def get_market_session_status():
   now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
-  is_weekend = now_kst.weekday() >= 5
+  weekday = now_kst.weekday()  # 월:0, 화:1, 수:2, 목:3, 금:4, 토:5, 일:6
   current_time_val = now_kst.hour * 60 + now_kst.minute
 
+  # 한국장 영업일/장중 여부 (토/일 제외)
+  is_korean_weekend = weekday >= 5
   korean_market_open = 9 * 60
   korean_market_close = 15 * 60 + 30
-  is_korean_market_hours = (not is_weekend) and (
+  is_korean_market_hours = (not is_korean_weekend) and (
       korean_market_open <= current_time_val <= korean_market_close
   )
 
@@ -52,7 +54,18 @@ def get_market_session_status():
   is_dst = dst_start <= now_kst < dst_end
   premarket_start_val = (17 if is_dst else 18) * 60
 
-  is_us_premarket_or_market_hours = (not is_weekend) and (
+  # [수정] 미국 주말 여부 정확히 처리
+  # 토요일 09:00 이전까지는 미국 금요일장이므로 평일 세션으로 인정
+  if weekday == 5 and now_kst.hour < 9:
+    is_us_active_day = True
+  elif weekday in [5, 6]:  # 토요일 9시 이후 ~ 일요일 전체는 주말
+    is_us_active_day = False
+  elif weekday == 0 and now_kst.hour < 9:  # 월요일 9시 이전도 주말
+    is_us_active_day = False
+  else:
+    is_us_active_day = True
+
+  is_us_premarket_or_market_hours = is_us_active_day and (
       current_time_val >= premarket_start_val or now_kst.hour < 9
   )
 
@@ -191,14 +204,12 @@ def get_naver_official_base_fx():
   headers = {"User-Agent": "Mozilla/5.0"}
   now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
 
-  # 장 개장 전(09:00 전)이면 직전 영업일의 15:30 환율을 타겟팅
   if now_kst.hour < 9:
     target_dt_str = get_prev_business_day(now_kst)
   else:
     target_dt_str = now_kst.strftime("%Y-%m-%d")
 
   try:
-    # 5일치 5분봉 데이터를 불러와 15시 30분 캔들을 확실하게 탐색
     url = "https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=5m&range=5d"
     resp = requests.get(url, headers=headers, timeout=5)
 
@@ -211,7 +222,7 @@ def get_naver_official_base_fx():
         indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
         close_prices = indicators.get("close", [])
 
-        target_time_val = 15 * 60 + 30  # 15:30 (930분)
+        target_time_val = 15 * 60 + 30
         best_rate = 0.0
         min_diff = float("inf")
 
@@ -220,17 +231,14 @@ def get_naver_official_base_fx():
             dt_kst = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Seoul"))
             date_str = dt_kst.strftime("%Y-%m-%d")
 
-            # 타겟 일자 이하의 날짜 중 15:30분과 가장 가까운 분봉 추출
             if date_str <= target_dt_str:
               curr_min = dt_kst.hour * 60 + dt_kst.minute
               diff = abs(curr_min - target_time_val)
 
-              # 날짜가 타겟일과 일치하면 최우선 적용
               if date_str == target_dt_str:
                 if diff < min_diff:
                   min_diff = diff
                   best_rate = float(price)
-              # 일치하는 날짜가 아직 없으면 가장 가까운 과거 마감일 환율 채택
               elif best_rate == 0.0 and diff < 30:
                 best_rate = float(price)
 
@@ -243,7 +251,6 @@ def get_naver_official_base_fx():
 
 
 def get_naver_etf_market_data(ticker_code="426030"):
-  """네이버 금융에서 ETF 현재가 및 전일대비 변동률(%)을 크롤링합니다."""
   result = {
       "current_price": 0.0,
       "prev_close": 0.0,
@@ -263,7 +270,6 @@ def get_naver_etf_market_data(ticker_code="426030"):
     if today_tag:
       result["current_price"] = float(today_tag.text.strip().replace(",", ""))
 
-    # 네이버 ETF 전일대비 변동률 파싱 조건 강화
     rate_info = soup.select_one("div.rate_info")
     if rate_info:
       exday_text = rate_info.get_text()

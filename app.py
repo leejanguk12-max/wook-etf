@@ -62,12 +62,12 @@ def get_market_session_status():
       or (weekday == 0 and current_time_val < premarket_start_val)
   )
 
-  # 평일 중 프리마켓 시작 전 대기시간 판별 (15:30 ~ 17:00/18:00)
+  # [수정] 평일 중 프리마켓 시작 전 대기시간 판별 (평일 15:30 ~ 17:00/18:00 낮 시간대만 해당)
+  # 새벽시간(00:00~09:00)은 미국 본장 진행 중이거나 마감 직후이므로 대기시간에서 제외!
   is_weekday_waiting = (
       (weekday < 5)
       and (not is_korean_market_hours)
-      and (current_time_val >= korean_market_close or current_time_val < 9 * 60)
-      and (current_time_val < premarket_start_val)
+      and (korean_market_close <= current_time_val < premarket_start_val)
   )
 
   # 지연 대기 15분 조건 판별

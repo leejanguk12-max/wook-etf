@@ -102,10 +102,12 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
     resp = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
 
+    # 1. 다양한 input 및 selector 조건으로 날짜 파싱 시도
     date_input = (
         soup.select_one("input[name='pdfDate']")
         or soup.select_one("input#pdfDate")
         or soup.select_one(".datepicker")
+        or soup.select_one("input[type='text']")
     )
     if date_input:
       val = date_input.get("value", "") or date_input.get_text()
@@ -199,12 +201,11 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-  """야후 파이낸스(USDKRW=X) 최근 5일치 분봉 데이터에서 한국시간(KST) 기준 가장 최근 15:30:00 마감 환율을 정확히 역추적합니다."""
+  """야후 파이낸스(USDKRW=X) 최근 5일치 분봉 데이터에서 한국시간(KST) 기준 가장 최근 15:30:00 마감 환율을 역추적합니다."""
   headers = {"User-Agent": "Mozilla/5.0"}
   now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
   weekday = now_kst.weekday()
 
-  # 주말(토/일)이거나 월요일 장 개장 전(09:00 전)이면 무조건 직전 영업일(금요일)의 15:30 환율을 타겟팅
   if weekday >= 5 or (weekday == 0 and now_kst.hour < 9):
     target_dt_str = get_prev_business_day(now_kst)
   elif now_kst.hour < 9:
@@ -225,7 +226,7 @@ def get_naver_official_base_fx():
         indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
         close_prices = indicators.get("close", [])
 
-        target_time_val = 15 * 60 + 30  # 15:30 (930분)
+        target_time_val = 15 * 60 + 30
         best_rate = 0.0
         min_diff = float("inf")
 
@@ -559,7 +560,13 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 if uploaded_file is None:
   with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
     df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
-    current_pdf_date_str = fetched_date if fetched_date else "2026-07-27"
+    # [수정] 하드코딩된 '2026-07-27'을 완전히 제거하고 현재 KST 날짜를 동적으로 반영
+    if fetched_date:
+      current_pdf_date_str = fetched_date
+    else:
+      now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
+      current_pdf_date_str = now_kst_dt.strftime("%Y-%m-%d")
+
     curr_dt = datetime.strptime(current_pdf_date_str, "%Y-%m-%d")
     prev_pdf_date_str = get_prev_business_day(curr_dt)
     df_prev, _ = get_timefolio_constituents_by_date(

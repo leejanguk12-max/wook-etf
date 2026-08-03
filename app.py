@@ -62,8 +62,7 @@ def get_market_session_status():
       or (weekday == 0 and current_time_val < premarket_start_val)
   )
 
-  # [수정] 평일 중 프리마켓 시작 전 대기시간 판별 (15:30 ~ 17:00/18:00)
-  # 토/일 주말이 아니고, 한국장 장중(15:30 전)이 아니며, 프리장 개장 전일 때
+  # 평일 중 프리마켓 시작 전 대기시간 판별 (15:30 ~ 17:00/18:00)
   is_weekday_waiting = (
       (weekday < 5)
       and (not is_korean_market_hours)
@@ -924,7 +923,7 @@ if df_input is not None and not df_input.empty:
                     <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률(15분 지연)</div>
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
                     <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
-                        ℹ️ 미국 프리마켓 시작 시각(서머타임 적용 시 오후 5시)부터 실시간 추정치가 제공됩니다.
+                        ℹ️ 미국 프리마켓 시작시 실시간 추정치가 제공됩니다.
                     </div>
                 </div>
                 """,
@@ -937,7 +936,7 @@ if df_input is not None and not df_input.empty:
                     <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
                     <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
                     <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
-                        ℹ️ 미국 프리마켓 시작 시각(서머타임 적용 시 오후 5시)부터 실시간 추정치가 제공됩니다.
+                        ℹ️ 미국 프리마켓 시작시 실시간 추정치가 제공됩니다.
                     </div>
                 </div>
                 """,

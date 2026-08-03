@@ -52,7 +52,8 @@ def get_market_session_status():
   )
 
   is_dst = dst_start <= now_kst < dst_end
-  premarket_start_val = (17 if is_dst else 18) * 60
+  premarket_start_val = (17 if is_dst else 18) * 60  # 17:00 / 18:00
+  reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)  # 22:30 / 23:30
 
   # 주말 판별 (토요일 09:00 이후 ~ 월요일 17:00 전)
   is_weekend_closed = (
@@ -61,16 +62,26 @@ def get_market_session_status():
       or (weekday == 0 and current_time_val < premarket_start_val)
   )
 
-  # 평일 중 프리마켓 시작 전 대기시간 판별 (평일 09:00 ~ 17:00/18:00)
+  # 평일 중 프리마켓 시작 전 대기시간 판별 (평일 15:30 ~ 17:00/18:00)
   is_weekday_waiting = (
       (not is_weekend_closed)
       and (not is_korean_market_hours)
-      and (9 * 60 <= current_time_val < premarket_start_val)
+      and (korean_market_close <= current_time_val < premarket_start_val)
+  )
+
+  # 지연 대기 15분 조건 판별
+  is_pre_delay_buffer = (not is_weekend_closed) and (
+      premarket_start_val <= current_time_val < (premarket_start_val + 15)
+  )
+  is_reg_delay_buffer = (not is_weekend_closed) and (
+      reg_start_val <= current_time_val < (reg_start_val + 15)
   )
 
   return (
       is_korean_market_hours,
       is_weekday_waiting,
+      is_pre_delay_buffer,
+      is_reg_delay_buffer,
       now_kst,
       is_dst,
   )
@@ -102,7 +113,6 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
     resp = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 1. 다양한 input 및 selector 조건으로 날짜 파싱 시도
     date_input = (
         soup.select_one("input[name='pdfDate']")
         or soup.select_one("input#pdfDate")
@@ -560,7 +570,6 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 if uploaded_file is None:
   with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
     df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
-    # [수정] 하드코딩된 '2026-07-27'을 완전히 제거하고 현재 KST 날짜를 동적으로 반영
     if fetched_date:
       current_pdf_date_str = fetched_date
     else:
@@ -871,15 +880,14 @@ if df_input is not None and not df_input.empty:
 
     st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
 
-    is_korean_market_hours, is_weekday_waiting, now_kst, is_dst = (
-        get_market_session_status()
-    )
-
-    curr_min_val = now_kst.hour * 60 + now_kst.minute
-    reg_start_min_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
-    is_us_delay_buffer = reg_start_min_val <= curr_min_val < (
-        reg_start_min_val + 15
-    )
+    (
+        is_korean_market_hours,
+        is_weekday_waiting,
+        is_pre_delay_buffer,
+        is_reg_delay_buffer,
+        now_kst,
+        is_dst,
+    ) = get_market_session_status()
 
     if is_korean_market_hours:
       st.markdown(
@@ -933,15 +941,22 @@ if df_input is not None and not df_input.empty:
                 """,
           unsafe_allow_html=True,
       )
-    elif is_us_delay_buffer:
-      next_time_str = "22:45" if is_dst else "23:45"
+    elif is_pre_delay_buffer or is_reg_delay_buffer:
+      pre_next_time = "17:15" if is_dst else "18:15"
+      reg_next_time = "22:45" if is_dst else "23:45"
+      delay_label = (
+          f"프리장 15분 지연데이터 대기 중 ⏳ ({pre_next_time}부터 제공)"
+          if is_pre_delay_buffer
+          else f"본장 15분 지연데이터 대기 중 ⏳ ({reg_next_time}부터 제공)"
+      )
+
       st.markdown(
           f"""
                 <div style="margin-bottom: 10px;">
                     <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률(15분 지연)</div>
-                    <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">본장 15분 지연데이터 대기 중 ⏳</div>
+                    <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">{delay_label}</div>
                     <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
-                        ℹ️ 미국 본장 개장 후 15분간은 지연 시세 반영 대기 시간입니다. ({next_time_str}부터 실시간 추정치 제공)
+                        ℹ️ 미국 시장 개장 후 15분간은 지연 시세 반영 대기 시간입니다.
                     </div>
                 </div>
                 """,
@@ -952,9 +967,9 @@ if df_input is not None and not df_input.empty:
           f"""
                 <div style="margin-bottom: 10px;">
                     <div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
-                    <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">본장 15분 지연데이터 대기 중 ⏳</div>
+                    <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">{delay_label}</div>
                     <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
-                        ℹ️ 미국 본장 개장 후 15분간은 지연 시세 반영 대기 시간입니다. ({next_time_str}부터 실시간 추정치 제공)
+                        ℹ️ 미국 시장 개장 후 15분간은 지연 시세 반영 대기 시간입니다.
                     </div>
                 </div>
                 """,

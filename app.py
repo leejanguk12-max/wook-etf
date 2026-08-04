@@ -99,7 +99,7 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
         "Referer": url,
     }
     data = []
-    fetched_date = date_str  # 파라미터로 받은 날짜 기본 지정
+    fetched_date = date_str
 
     try:
         if date_str:
@@ -110,12 +110,6 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
             resp = requests.get(url, headers=headers, timeout=10)
 
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 구성종목 테이블 인근 또는 페이지 본문 텍스트에서 실제 PDF 작성일 정밀 탐색
-        constituent_sec = soup.select_one("#constituentItems") or soup
-        m_sec = re.search(r"(\d{4})[.-/]\s*(\d{2})[.-/]\s*(\d{2})", constituent_sec.get_text())
-        if m_sec:
-            fetched_date = f"{m_sec.group(1)}-{m_sec.group(2)}-{m_sec.group(3)}"
 
         rows = soup.select("table tr")
         exclude_keywords = [
@@ -524,22 +518,31 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 
 if uploaded_file is None:
     with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
-        # 1) 가장 최근에 올라온 PDF 구성종목과 해당 표의 실제 작성일자 수집
-        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
-        
-        # [수정] 실제 크롤링해서 들고 온 PDF 작성일(8/4)을 1순위로 확정
-        if fetched_date:
-            current_pdf_date_str = fetched_date
-        else:
-            current_pdf_date_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+        now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
+        target_date_candidate = now_kst_dt.strftime("%Y-%m-%d")
 
-        # 2) 당일 PDF 날짜(8/4) 기준으로 직전 영업일(8/3) 산출 및 데이터 크롤링
+        # [검증 및 자동 소급 핵심 로직]
+        # 오늘 날짜로 요청을 먼저 시도하고, 실제 종목 데이터(df_input)가 있는 유효 날짜를 탐색합니다.
+        for _ in range(5):  # 최대 5 영업일간 과거로 자동 탐색
+            df_input, _ = get_timefolio_constituents_by_date(idx=2, date_str=target_date_candidate)
+            if df_input is not None and not df_input.empty:
+                current_pdf_date_str = target_date_candidate
+                break
+            # 데이터가 비어있으면 하루 전 영업일로 소급
+            target_date_candidate = get_prev_business_day(target_date_candidate)
+
+        # 5일간 탐색 실패 시 파라미터 없는 기본 페이지 크롤링
+        if df_input is None or df_input.empty:
+            df_input, _ = get_timefolio_constituents_by_date(idx=2)
+            current_pdf_date_str = target_date_candidate
+
+        # 확정된 당일 데이터 기준일(예: 8/4)로부터 직전 영업일(예: 8/3) 지정
         prev_pdf_date_str = get_prev_business_day(current_pdf_date_str)
         df_prev, _ = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
 
-        # 3) 안전장치: 혹시라도 오늘/어제 데이터가 동일하게 올 경우 하루 더 전 영업일로 소급
+        # 안전장치: 혹시라도 오늘/어제 비중 데이터가 완전히 동일하게 수집되면 하루 더 전 영업일로 소급
         if df_prev is not None and not df_prev.empty and df_input is not None:
             if df_input["비중"].tolist() == df_prev["비중"].tolist():
                 older_prev_date = get_prev_business_day(prev_pdf_date_str)

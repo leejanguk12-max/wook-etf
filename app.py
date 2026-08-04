@@ -730,30 +730,22 @@ if df_input is not None and not df_input.empty:
 
             w_diff_val, prev_w_str, w_diff_str = 0.0, "-", "-"
 
-            # =========================================================
-            # [버그 완전 수정] 비중 변화 조건 판별 로직
-            # =========================================================
             if prev_w is None:
-                # 어제 파일에 없는 완전한 신규 종목
                 if weight > 0:
                     w_diff_str = "✨ NEW"
                     w_diff_val = weight
                     new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
             else:
-                # 어제 파일에도 존재했던 종목
                 w_diff = weight - prev_w
                 w_diff_val = w_diff
                 prev_w_str = f"{prev_w:.2f}%"
 
                 if weight == 0.0 and prev_w > 0:
-                    # 편출 (전량 매도)
                     w_diff_str = "🚪 OUT"
                     removed_stocks.append(f"**{ticker}** (전일 {prev_w:.2f}%)")
                 elif abs(w_diff) >= 0.001:
-                    # 비중 증감
                     w_diff_str = f"{w_diff:+.2f}%"
                 else:
-                    # 비중 유지 (동일함)
                     w_diff_str = "+0.00%"
 
             if ticker == "현금":
@@ -1041,7 +1033,7 @@ if df_input is not None and not df_input.empty:
             display_base_df["주가변동률(%)"] = 0.0
 
         # =========================================================
-        # 🔥 히트맵 (현금 항목 제외)
+        # 🔥 히트맵 (현금 항목 제외 및 하단 컬러바 제거 적용)
         # =========================================================
         st.markdown("---")
         active_df = display_base_df[
@@ -1078,20 +1070,13 @@ if df_input is not None and not df_input.empty:
         fig_treemap.update_traces(
             textposition="middle center", selector=dict(type="treemap")
         )
+        
+        # [수정] coloraxis_showscale=False 설정 및 하단 여백 제거로 히트맵 영역 극대화
         fig_treemap.update_layout(
-            margin=dict(t=5, l=5, r=5, b=30),
+            margin=dict(t=5, l=5, r=5, b=5),
             height=600,
             uniformtext=dict(minsize=8, mode=False),
-            coloraxis_colorbar=dict(
-                title=dict(text="주가변동률(%)", side="top"),
-                orientation="h",
-                y=-0.15,
-                x=0.5,
-                xanchor="center",
-                len=0.85,
-                tickvals=[-3, -2, -1, 0, 1, 2, 3],
-                ticktext=["-3%", "-2%", "-1%", "0%", "+1%", "+2%", "+3%"],
-            ),
+            coloraxis_showscale=False,
         )
         st.plotly_chart(fig_treemap, use_container_width=True)
 

@@ -92,14 +92,14 @@ def get_prev_business_day(ref_date):
 
 
 def get_timefolio_constituents_by_date(idx=2, date_str=None):
-    """타임폴리오 특정 날짜의 실제 PDF 구성종목과 정밀 일자를 추출합니다."""
+    """POST / GET 방식으로 타임폴리오 특정 날짜의 실제 PDF 구성종목을 크롤링합니다."""
     url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": url,
     }
     data = []
-    fetched_date = None
+    fetched_date = date_str  # 파라미터로 받은 날짜 기본 지정
 
     try:
         if date_str:
@@ -111,23 +111,11 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # HTML 내 날짜 추출 (input, datepicker, 텍스트 전체 정밀 검색)
-        date_input = (
-            soup.select_one("input[name='pdfDate']")
-            or soup.select_one("input#pdfDate")
-            or soup.select_one(".datepicker")
-        )
-        if date_input and date_input.get("value"):
-            val = date_input.get("value", "").strip()
-            m = re.search(r"(\d{4})[.-/]\s*(\d{2})[.-/]\s*(\d{2})", val)
-            if m:
-                fetched_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-
-        if not fetched_date:
-            page_text = soup.get_text()
-            m_sec = re.search(r"(\d{4})[.-/]\s*(\d{2})[.-/]\s*(\d{2})", page_text)
-            if m_sec:
-                fetched_date = f"{m_sec.group(1)}-{m_sec.group(2)}-{m_sec.group(3)}"
+        # 구성종목 테이블 인근 또는 페이지 본문 텍스트에서 실제 PDF 작성일 정밀 탐색
+        constituent_sec = soup.select_one("#constituentItems") or soup
+        m_sec = re.search(r"(\d{4})[.-/]\s*(\d{2})[.-/]\s*(\d{2})", constituent_sec.get_text())
+        if m_sec:
+            fetched_date = f"{m_sec.group(1)}-{m_sec.group(2)}-{m_sec.group(3)}"
 
         rows = soup.select("table tr")
         exclude_keywords = [
@@ -536,27 +524,22 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 
 if uploaded_file is None:
     with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
-        timefolio_info = get_timefolio_official_data(idx=2)
-        base_confirm_date = timefolio_info.get("base_date", "")
-
-        # 1) 가장 최근 공식 업데이트된 당일 데이터 수집
+        # 1) 가장 최근에 올라온 PDF 구성종목과 해당 표의 실제 작성일자 수집
         df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
         
-        # [핵심 수정] 타임폴리오 페이지의 확정일자(base_date)나 크롤링한 실측 날짜를 최우선 확정
-        if base_confirm_date:
-            current_pdf_date_str = base_confirm_date.replace(".", "-")
-        elif fetched_date:
+        # [수정] 실제 크롤링해서 들고 온 PDF 작성일(8/4)을 1순위로 확정
+        if fetched_date:
             current_pdf_date_str = fetched_date
         else:
             current_pdf_date_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
 
-        # 2) 확정된 당일 날짜(8/4)를 기준으로 정확한 '직전 영업일(8/3)' 계산 및 POST 데이터 수집
+        # 2) 당일 PDF 날짜(8/4) 기준으로 직전 영업일(8/3) 산출 및 데이터 크롤링
         prev_pdf_date_str = get_prev_business_day(current_pdf_date_str)
         df_prev, _ = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
 
-        # 3) 안전장치: 직전 영업일 데이터가 오늘 데이터와 완전 동일하면 하루 더 전 영업일로 재조회
+        # 3) 안전장치: 혹시라도 오늘/어제 데이터가 동일하게 올 경우 하루 더 전 영업일로 소급
         if df_prev is not None and not df_prev.empty and df_input is not None:
             if df_input["비중"].tolist() == df_prev["비중"].tolist():
                 older_prev_date = get_prev_business_day(prev_pdf_date_str)

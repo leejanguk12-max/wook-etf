@@ -102,7 +102,6 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
     fetched_date = None
 
     try:
-        # POST 요청으로 날짜 지정 전송 (GET 시 서버에서 반응하지 않는 문제 완벽 해결)
         if date_str:
             formatted_date_dot = date_str.replace("-", ".")
             post_data = {"pdfDate": formatted_date_dot, "idx": str(idx)}
@@ -539,28 +538,22 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 
 if uploaded_file is None:
     with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
-        now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
-        today_date_str = now_kst_dt.strftime("%Y-%m-%d")
-
-        # 1) 기본 최신 업로드 데이터 조회 (POST/GET 보완)
+        # 기본 최신 업로드 데이터 조회
         df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
         
-        # 가져온 데이터의 실제 PDF 작성일 설정
+        # [수정] 실제 타임폴리오 표에서 수집해 온 PDF 기준 날짜(예: 8/4)를 최우선 적용
         if fetched_date:
             current_pdf_date_str = fetched_date
         else:
-            current_pdf_date_str = today_date_str
+            current_pdf_date_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
 
-        # 2) 가져온 오늘 PDF 작성일(예: 8/4) 기준으로 직전 영업일(예: 8/3) 계산
+        # 가져온 PDF 작성일(8/4) 기준으로 직전 영업일(8/3) 계산 및 조회
         prev_pdf_date_str = get_prev_business_day(current_pdf_date_str)
-        
-        # 3) 직전 영업일(8/3) 데이터를 POST 요청으로 명확히 조회
-        df_prev, prev_fetched_date = get_timefolio_constituents_by_date(
+        df_prev, _ = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
 
-        # [안전장치] 만약 직전 영업일 데이터가 오늘 데이터와 완전히 동일하게 리턴된 경우
-        # 더 과거 영업일로 1단계 더 소급하여 어제 비중표를 강제로 교체 수집
+        # 안전장치: 직전 영업일 데이터가 오늘 데이터와 동일한 비중으로 내려오면 그 전 영업일로 소급
         if df_prev is not None and not df_prev.empty and df_input is not None:
             if df_input["비중"].tolist() == df_prev["비중"].tolist():
                 older_prev_date = get_prev_business_day(prev_pdf_date_str)

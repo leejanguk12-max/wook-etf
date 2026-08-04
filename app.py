@@ -200,7 +200,6 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
 
 
 def get_naver_official_base_fx():
-    """[요구사항 완벽 유지] 야후 파이낸스(USDKRW=X) 최근 5일치 분봉 데이터에서 한국시간(KST) 기준 마감 환율 역추적"""
     headers = {"User-Agent": "Mozilla/5.0"}
     now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
     weekday = now_kst.weekday()
@@ -369,7 +368,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """[핵심] 세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 100% 실시간 주가 및 환율을 수집합니다."""
+    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 100% 실시간 주가 및 환율 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -447,7 +446,6 @@ def get_yahoo_realtime_prices_robust(symbols):
         except Exception:
             pass
 
-    # [환율 안전장치 1] 야후 환율 실패 시 TradingView Forex 스캐너로 보완
     if live_fx == 0.0:
         try:
             resp_fx = requests.post(
@@ -693,10 +691,8 @@ if df_input is not None and not df_input.empty:
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
         
-        # [차단 없는 야후 실시간 수집 연동]
         batch_results, live_fx = get_yahoo_realtime_prices_robust(ticker_list)
 
-        # [환율 안전장치 2] live_fx가 0이면 기준 환율로 대체하여 -100% 오류 완전 방지
         if live_fx == 0.0 and official_base_fx > 0:
             live_fx = official_base_fx
 
@@ -733,23 +729,32 @@ if df_input is not None and not df_input.empty:
             )
 
             w_diff_val, prev_w_str, w_diff_str = 0.0, "-", "-"
-            if prev_w is not None:
+
+            # =========================================================
+            # [버그 완전 수정] 비중 변화 조건 판별 로직
+            # =========================================================
+            if prev_w is None:
+                # 어제 파일에 없는 완전한 신규 종목
+                if weight > 0:
+                    w_diff_str = "✨ NEW"
+                    w_diff_val = weight
+                    new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
+            else:
+                # 어제 파일에도 존재했던 종목
                 w_diff = weight - prev_w
                 w_diff_val = w_diff
                 prev_w_str = f"{prev_w:.2f}%"
-                if abs(w_diff) >= 0.001:
+
+                if weight == 0.0 and prev_w > 0:
+                    # 편출 (전량 매도)
+                    w_diff_str = "🚪 OUT"
+                    removed_stocks.append(f"**{ticker}** (전일 {prev_w:.2f}%)")
+                elif abs(w_diff) >= 0.001:
+                    # 비중 증감
                     w_diff_str = f"{w_diff:+.2f}%"
                 else:
-                    w_diff_str = "✨ NEW"
-                    w_diff_val = weight
-                    if weight > 0:
-                        new_added_stocks.append(f"**{ticker}** ({weight:.2f}%)")
-
-            if weight == 0.0 and prev_w is not None and prev_w > 0:
-                w_diff_val = 0.0 - prev_w
-                prev_w_str = f"{prev_w:.2f}%"
-                w_diff_str = "🚪 OUT"
-                removed_stocks.append(f"**{ticker}** (전일 {prev_w:.2f}%)")
+                    # 비중 유지 (동일함)
+                    w_diff_str = "+0.00%"
 
             if ticker == "현금":
                 krw_amount = (
@@ -768,7 +773,6 @@ if df_input is not None and not df_input.empty:
                 })
             elif "NQU" in ticker or "NQ1!" in ticker or "NQ=" in ticker:
                 qqq_price, qqq_change = batch_results.get("QQQ", (0.0, 0.0))
-                # [선물 표기 '나스닥' 반영]
                 live_data.append({
                     "종목코드": "나스닥",
                     "실시간 가격($)": qqq_price,
@@ -910,7 +914,6 @@ if df_input is not None and not df_input.empty:
                 unsafe_allow_html=True,
             )
         else:
-            # 미국 프리장/본장 개장 시 15분 대기 문구 없이 즉시 실시간 변동률 출력
             def render_custom_metric(
                 label, value, delta_text, is_plus, extra_info=""
             ):

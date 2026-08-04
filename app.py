@@ -79,7 +79,7 @@ def get_market_session_status():
 def get_prev_business_day(ref_date):
     if isinstance(ref_date, str):
         ref_date = datetime.strptime(ref_date, "%Y-%m-%d")
-    
+
     if ref_date.weekday() == 0:
         prev_day = ref_date - timedelta(days=3)
     elif ref_date.weekday() == 6:
@@ -92,17 +92,24 @@ def get_prev_business_day(ref_date):
 
 
 def get_timefolio_constituents_by_date(idx=2, date_str=None):
-    url = (
-        f"https://timeetf.co.kr/m11_view.php?idx={idx}&pdfDate={date_str}#constituentItems"
-        if date_str
-        else f"https://timeetf.co.kr/m11_view.php?idx={idx}#constituentItems"
-    )
-    headers = {"User-Agent": "Mozilla/5.0"}
+    """POST / GET 방식으로 타임폴리오 특정 날짜의 실제 PDF 구성종목을 크롤링합니다."""
+    url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": url,
+    }
     data = []
     fetched_date = None
 
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        # POST 요청으로 날짜 지정 전송 (GET 시 서버에서 반응하지 않는 문제 완벽 해결)
+        if date_str:
+            formatted_date_dot = date_str.replace("-", ".")
+            post_data = {"pdfDate": formatted_date_dot, "idx": str(idx)}
+            resp = requests.post(url, headers=headers, data=post_data, timeout=10)
+        else:
+            resp = requests.get(url, headers=headers, timeout=10)
+
         soup = BeautifulSoup(resp.text, "html.parser")
 
         date_input = (
@@ -535,33 +542,31 @@ if uploaded_file is None:
         now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
         today_date_str = now_kst_dt.strftime("%Y-%m-%d")
 
-        # 1차 시도: 오늘 날짜로 수집 시도
-        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2, date_str=today_date_str)
+        # 1) 기본 최신 업로드 데이터 조회 (POST/GET 보완)
+        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
         
-        # 만약 오늘 날짜로 데이터가 안 내려오면 기본 페이지(최근 업로드분) 시도
-        if df_input is None or df_input.empty:
-            df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
-
-        # 2차 판단: 가져온 최신 PDF 날짜 확인 및 오늘 데이터 설정
+        # 가져온 데이터의 실제 PDF 작성일 설정
         if fetched_date:
             current_pdf_date_str = fetched_date
         else:
             current_pdf_date_str = today_date_str
 
-        # [수정/보완 핵심] 오늘 PDF 날짜 기준 '직전 영업일'을 정확히 산출하여 어제 데이터 요청
-        curr_dt = datetime.strptime(current_pdf_date_str, "%Y-%m-%d")
-        prev_pdf_date_str = get_prev_business_day(curr_dt)
+        # 2) 가져온 오늘 PDF 작성일(예: 8/4) 기준으로 직전 영업일(예: 8/3) 계산
+        prev_pdf_date_str = get_prev_business_day(current_pdf_date_str)
         
-        df_prev, _ = get_timefolio_constituents_by_date(
+        # 3) 직전 영업일(8/3) 데이터를 POST 요청으로 명확히 조회
+        df_prev, prev_fetched_date = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
 
-        # 혹시 직전 영업일 데이터도 없으면 한 번 더 과거 영업일 추적
-        if df_prev is None or df_prev.empty:
-            older_prev_date_str = get_prev_business_day(prev_pdf_date_str)
-            df_prev, _ = get_timefolio_constituents_by_date(
-                idx=2, date_str=older_prev_date_str
-            )
+        # [안전장치] 만약 직전 영업일 데이터가 오늘 데이터와 완전히 동일하게 리턴된 경우
+        # 더 과거 영업일로 1단계 더 소급하여 어제 비중표를 강제로 교체 수집
+        if df_prev is not None and not df_prev.empty and df_input is not None:
+            if df_input["비중"].tolist() == df_prev["비중"].tolist():
+                older_prev_date = get_prev_business_day(prev_pdf_date_str)
+                df_prev, _ = get_timefolio_constituents_by_date(
+                    idx=2, date_str=older_prev_date
+                )
 else:
     try:
         raw_df_in = pd.read_excel(uploaded_file)
@@ -710,7 +715,7 @@ if df_input is not None and not df_input.empty:
         official_base_fx = get_naver_official_base_fx()
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
-        
+
         batch_results, live_fx = get_yahoo_realtime_prices_robust(ticker_list)
 
         if live_fx == 0.0 and official_base_fx > 0:

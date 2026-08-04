@@ -363,7 +363,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_finnhub_realtime_prices(symbols, api_key):
-  """Finnhub API를 사용하여 프리장/본장 실시간 가격 및 변동률(dp)을 가져옵니다."""
+  """Finnhub API를 사용하여 실시간 가격 및 변동률을 연산하며, dp 누락 시 c/pc로 2차 검증 연산합니다."""
   result_map, live_fx = {}, 0.0
 
   if not api_key:
@@ -388,18 +388,23 @@ def get_finnhub_realtime_prices(symbols, api_key):
     url = f"https://finnhub.io/api/v1/quote?symbol={sym}&token={api_key}"
     try:
       resp = requests.get(url, timeout=3).json()
-      current_price = resp.get("c", 0.0)
-      change_pct = resp.get("dp", 0.0)
+      current_price = float(resp.get("c", 0.0))
+      prev_close = float(resp.get("pc", 0.0))
+      change_pct_raw = resp.get("dp", None)
+
+      final_change_pct = 0.0
+      # 1차: dp가 정상 수치로 존재하는 경우
+      if change_pct_raw is not None and float(change_pct_raw) != 0.0:
+        final_change_pct = float(change_pct_raw)
+      # 2차: dp가 없거나 0인데 현재가와 전일종가가 유효한 경우 직접 연산
+      elif current_price > 0 and prev_close > 0:
+        final_change_pct = ((current_price - prev_close) / prev_close) * 100
 
       if current_price > 0:
-        result_map[sym] = (
-            float(current_price),
-            float(change_pct) if change_pct is not None else 0.0,
-        )
+        result_map[sym] = (current_price, final_change_pct)
     except Exception:
       pass
 
-    # 분당 60회 요청 제한 방지용 대기 (0.05초)
     time.sleep(0.05)
 
   # 환율 수집 (OANDA:USD_KRW)
@@ -408,11 +413,10 @@ def get_finnhub_realtime_prices(symbols, api_key):
         f"https://finnhub.io/api/v1/quote?symbol=OANDA:USD_KRW&token={api_key}"
     )
     fx_resp = requests.get(fx_url, timeout=3).json()
-    live_fx = fx_resp.get("c", 0.0)
+    live_fx = float(fx_resp.get("c", 0.0))
   except Exception:
     pass
 
-  # NQU 등 지수 선물 표기 대응 (QQQ 시세 대치)
   if "QQQ" in result_map:
     for s in symbols:
       sym_upper = str(s).upper()
@@ -643,7 +647,6 @@ if df_input is not None and not df_input.empty:
     naver_market = get_naver_etf_market_data("426030")
     timefolio_data = get_timefolio_official_data(idx=2)
 
-    # Streamlit Secrets에서 API Key 안전하게 불러오기
     FINNHUB_API_KEY = st.secrets.get("FINNHUB_API_KEY", "")
     if not FINNHUB_API_KEY:
       st.warning(
@@ -720,8 +723,9 @@ if df_input is not None and not df_input.empty:
             "비중변화(%)": w_diff_str,
             "비중변화_수치": w_diff_val,
         })
-      elif "NQU" in ticker or "NQ1!" in ticker or "NQ=" in ticker:
+      elif any(k in ticker for k in ["NQU", "NQ1!", "NQ="]):
         qqq_price, qqq_change = batch_results.get("QQQ", (0.0, 0.0))
+        # [수정 1] 종목코드를 "나스닥"으로 단정하게 표시
         live_data.append({
             "종목코드": "나스닥",
             "실시간 가격($)": qqq_price,
@@ -991,11 +995,13 @@ if df_input is not None and not df_input.empty:
       display_base_df["주가변동률(%)"] = 0.0
 
     # =========================================================
-    # 🔥 히트맵 (현금 항목 제외)
+    # 🔥 히트맵
     # =========================================================
     st.markdown("---")
+    # [수정 2] 히트맵 생성 시 현금을 조건에서 제외 (종목코드 != '현금')
     active_df = display_base_df[
-        (display_base_df["당일비중(%)"] > 0) & (display_base_df["종목코드"] != "현금")
+        (display_base_df["당일비중(%)"] > 0)
+        & (display_base_df["종목코드"] != "현금")
     ].copy()
     st.markdown(f"### 🔥 전체 구성종목 ({len(active_df)}개) 히트맵")
 

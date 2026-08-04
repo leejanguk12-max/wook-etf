@@ -77,6 +77,9 @@ def get_market_session_status():
 
 
 def get_prev_business_day(ref_date):
+    if isinstance(ref_date, str):
+        ref_date = datetime.strptime(ref_date, "%Y-%m-%d")
+    
     if ref_date.weekday() == 0:
         prev_day = ref_date - timedelta(days=3)
     elif ref_date.weekday() == 6:
@@ -368,7 +371,6 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 100% 실시간 주가 및 환율 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -530,18 +532,36 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 
 if uploaded_file is None:
     with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
-        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
+        now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
+        today_date_str = now_kst_dt.strftime("%Y-%m-%d")
+
+        # 1차 시도: 오늘 날짜로 수집 시도
+        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2, date_str=today_date_str)
+        
+        # 만약 오늘 날짜로 데이터가 안 내려오면 기본 페이지(최근 업로드분) 시도
+        if df_input is None or df_input.empty:
+            df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
+
+        # 2차 판단: 가져온 최신 PDF 날짜 확인 및 오늘 데이터 설정
         if fetched_date:
             current_pdf_date_str = fetched_date
         else:
-            now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
-            current_pdf_date_str = now_kst_dt.strftime("%Y-%m-%d")
+            current_pdf_date_str = today_date_str
 
+        # [수정/보완 핵심] 오늘 PDF 날짜 기준 '직전 영업일'을 정확히 산출하여 어제 데이터 요청
         curr_dt = datetime.strptime(current_pdf_date_str, "%Y-%m-%d")
         prev_pdf_date_str = get_prev_business_day(curr_dt)
+        
         df_prev, _ = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
+
+        # 혹시 직전 영업일 데이터도 없으면 한 번 더 과거 영업일 추적
+        if df_prev is None or df_prev.empty:
+            older_prev_date_str = get_prev_business_day(prev_pdf_date_str)
+            df_prev, _ = get_timefolio_constituents_by_date(
+                idx=2, date_str=older_prev_date_str
+            )
 else:
     try:
         raw_df_in = pd.read_excel(uploaded_file)
@@ -1070,8 +1090,6 @@ if df_input is not None and not df_input.empty:
         fig_treemap.update_traces(
             textposition="middle center", selector=dict(type="treemap")
         )
-        
-        # [수정] coloraxis_showscale=False 설정 및 하단 여백 제거로 히트맵 영역 극대화
         fig_treemap.update_layout(
             margin=dict(t=5, l=5, r=5, b=5),
             height=600,

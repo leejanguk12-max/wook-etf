@@ -521,28 +521,22 @@ if uploaded_file is None:
         now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
         target_date_candidate = now_kst_dt.strftime("%Y-%m-%d")
 
-        # [검증 및 자동 소급 핵심 로직]
-        # 오늘 날짜로 요청을 먼저 시도하고, 실제 종목 데이터(df_input)가 있는 유효 날짜를 탐색합니다.
-        for _ in range(5):  # 최대 5 영업일간 과거로 자동 탐색
+        for _ in range(5):
             df_input, _ = get_timefolio_constituents_by_date(idx=2, date_str=target_date_candidate)
             if df_input is not None and not df_input.empty:
                 current_pdf_date_str = target_date_candidate
                 break
-            # 데이터가 비어있으면 하루 전 영업일로 소급
             target_date_candidate = get_prev_business_day(target_date_candidate)
 
-        # 5일간 탐색 실패 시 파라미터 없는 기본 페이지 크롤링
         if df_input is None or df_input.empty:
             df_input, _ = get_timefolio_constituents_by_date(idx=2)
             current_pdf_date_str = target_date_candidate
 
-        # 확정된 당일 데이터 기준일(예: 8/4)로부터 직전 영업일(예: 8/3) 지정
         prev_pdf_date_str = get_prev_business_day(current_pdf_date_str)
         df_prev, _ = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
 
-        # 안전장치: 혹시라도 오늘/어제 비중 데이터가 완전히 동일하게 수집되면 하루 더 전 영업일로 소급
         if df_prev is not None and not df_prev.empty and df_input is not None:
             if df_input["비중"].tolist() == df_prev["비중"].tolist():
                 older_prev_date = get_prev_business_day(prev_pdf_date_str)
@@ -1035,9 +1029,8 @@ if df_input is not None and not df_input.empty:
                 f"📋 **포트폴리오 변동 내역** \n- {new_msg} \n- {out_msg}"
             )
 
+        # [핵심 수정] 한국장 개장 중(09:00~15:30)이어도 미국 직전 장 종가 변동률 및 히트맵 색상이 그대로 유지되도록 0.0 덮어쓰기 로직 삭제
         display_base_df = result_df.copy()
-        if is_korean_market_hours:
-            display_base_df["주가변동률(%)"] = 0.0
 
         # =========================================================
         # 🔥 히트맵 (현금 항목 제외 및 하단 컬러바 제거 적용)

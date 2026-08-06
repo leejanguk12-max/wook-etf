@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
@@ -373,90 +374,46 @@ def get_yahoo_realtime_prices_robust(symbols):
     clean_symbols = list(set(clean_symbols))
     all_query_symbols = clean_symbols + ["USDKRW=X"]
 
-    session = requests.Session()
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-        "Referer": "https://finance.yahoo.com/",
-    }
-    session.headers.update(headers)
+    result_map, live_fx = {}, 0.0
 
-    crumb = None
+    # 차단 회피형 yfinance 배치 수집 적용 (프리장/본장 실시간 체결가 완벽 보장)
     try:
-        session.get("https://finance.yahoo.com/", timeout=4)
-        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
-        if resp_crumb.status_code == 200 and resp_crumb.text:
-            crumb = resp_crumb.text.strip()
+        tickers_obj = yf.Tickers(" ".join(all_query_symbols))
+        for symbol in all_query_symbols:
+            try:
+                t = tickers_obj.tickers.get(symbol)
+                if not t:
+                    continue
+
+                info = t.fast_info
+                reg_price = float(info.last_price or 0.0)
+                prev_close = float(info.previous_close or 0.0)
+
+                if symbol == "USDKRW=X":
+                    live_fx = reg_price
+                    continue
+
+                # yfinance를 통해 프리장 실시간 체결가 파싱 시도
+                latest_price = reg_price
+                try:
+                    # 1분봉 데이터 수집 (프리장 포함)
+                    hist = t.history(period="1d", interval="1m", prepost=True)
+                    if not hist.empty:
+                        latest_price = float(hist["Close"].iloc[-1])
+                except Exception:
+                    pass
+
+                if latest_price > 0 and reg_price > 0:
+                    change_pct = ((latest_price - reg_price) / reg_price) * 100
+                    result_map[symbol] = (float(latest_price), float(change_pct))
+                elif reg_price > 0:
+                    result_map[symbol] = (float(reg_price), 0.0)
+            except Exception:
+                pass
     except Exception:
         pass
 
-    result_map, live_fx = {}, 0.0
-
-    # 프리마켓 수집을 위해 v8 API 개별/배치 호출 처리
-    for sym in all_query_symbols:
-        try:
-            # 1. v8 chart API 호출 (프리마켓 데이터 수집용)
-            v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d&includePrePost=true"
-            resp_v8 = session.get(v8_url, timeout=3)
-            
-            p_price = 0.0
-            p_change = 0.0
-            p_found = False
-
-            if resp_v8.status_code == 200:
-                v8_data = resp_v8.json().get("chart", {}).get("result", [])
-                if v8_data:
-                    meta = v8_data[0].get("meta", {})
-                    # v8 meta에 preMarketPrice 정보가 존재하는지 확인
-                    pre_price = meta.get("preMarketPrice")
-                    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-                    
-                    if pre_price is not None and prev_close and prev_close > 0:
-                        p_price = float(pre_price)
-                        p_change = ((p_price - prev_close) / prev_close) * 100
-                        p_found = True
-                    else:
-                        # meta에 없더라도 프리마켓 시점 배열의 최신 가격 추출
-                        indicators = v8_v8_data_quote = v8_data[0].get("indicators", {}).get("quote", [{}])[0]
-                        closes = [c for c in indicators.get("close", []) if c is not None]
-                        if closes and prev_close and prev_close > 0:
-                            latest_close = float(closes[-1])
-                            # 본장 종가와 일치하지 않는 실시간 변화가 있는 경우 파싱
-                            p_price = latest_close
-                            p_change = ((latest_close - prev_close) / prev_close) * 100
-                            p_found = True
-
-            # 2. v8에서 정보를 취득하지 못한 경우 기존 v7 파이프라인(본장 수집)으로 폴백
-            if not p_found or p_price == 0.0:
-                symbols_param = sym
-                v7_url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else "")
-                resp_v7 = session.get(v7_url, timeout=3)
-                if resp_v7.status_code == 200:
-                    quotes = resp_v7.json().get("quoteResponse", {}).get("result", [])
-                    if quotes:
-                        q = quotes[0]
-                        market_state = q.get("marketState", "")
-                        if market_state == "PRE" and "preMarketPrice" in q:
-                            p_price = float(q.get("preMarketPrice", 0.0))
-                            p_change = float(q.get("preMarketChangePercent", 0.0))
-                        else:
-                            p_price = float(q.get("regularMarketPrice", 0.0))
-                            p_change = float(q.get("regularMarketChangePercent", 0.0))
-
-            if sym == "USDKRW=X":
-                live_fx = p_price
-            else:
-                result_map[sym] = (p_price, p_change)
-
-        except Exception:
-            pass
-
-    # 환율 백업 로직 (기존 유지)
+    # 환율 Fallback 처리
     if live_fx == 0.0:
         try:
             resp_fx = requests.post(

@@ -357,7 +357,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_naver_realtime_prices_robust(symbols):
-    """네이버 금융 모바일 API 및 검색 페이지를 활용해 해외 주가 및 환율 수집"""
+    """네이버 금융 해외주식 모바일 API를 사용하여 종목별 가격 및 등락률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -377,7 +377,7 @@ def get_naver_realtime_prices_robust(symbols):
 
     for sym in clean_symbols:
         try:
-            url = f"https://m.stock.naver.com/api/stock/{sym}/basic"
+            url = f"https://m.stock.naver.com/api/stock/overseas/{sym}"
             resp = requests.get(url, headers=headers, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()

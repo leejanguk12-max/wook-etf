@@ -403,7 +403,7 @@ def get_yahoo_realtime_prices_robust(symbols):
         f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
     ]
 
-    # 1. 본장용 기존 v7 API 수집 시도
+    # 1. 기존 v7 API 시도 (본장 정규장 수집용 유지)
     for url in endpoints:
         try:
             resp = session.get(url, timeout=5)
@@ -435,14 +435,13 @@ def get_yahoo_realtime_prices_robust(symbols):
         except Exception:
             pass
 
-    # 2. 프리장 수집 보완: v7 수집 실패 혹은 프리장 항목 누락 시 v8 Chart API를 통해 프리장 실시간 시세 수집
-    missing_or_pre_symbols = [
+    # 2. 프리장 시세 보완 (v7 수집 실패 시 또는 프리장 시세 누락 시 v8 Chart API 적용)
+    missing_symbols = [
         s for s in all_query_symbols 
         if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
     ]
-    
-    # v7 결과가 존재하더라도 프리장 시세 체크를 위해 v8로 프리장 데이터 보완
-    if missing_or_pre_symbols or not result_map:
+
+    if missing_symbols or not result_map:
         for symbol in all_query_symbols:
             try:
                 v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d&includePrePost=true"
@@ -456,24 +455,25 @@ def get_yahoo_realtime_prices_robust(symbols):
                                 live_fx = float(meta.get("regularMarketPrice", 0.0))
                             continue
 
-                        trading_period = meta.get("currentTradingPeriod", {}).get("pre", {})
                         prev_close = float(meta.get("previousClose", 0.0))
                         reg_price = float(meta.get("regularMarketPrice", 0.0))
 
-                        quotes = [
-                            q for q in chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                            if q is not None
-                        ]
-                        latest_price = quotes[-1] if quotes else reg_price
+                        # 1분 단위 유효 체결가 배열 파싱
+                        raw_quotes = chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                        valid_quotes = [q for q in raw_quotes if q is not None]
 
-                        # 프리장 시세 수집 적용 (v7이 실패했거나 v8의 프리장 가격이 존재하는 경우)
                         if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            change_pct = (
-                                ((latest_price - prev_close) / prev_close) * 100
-                                if prev_close > 0
-                                else 0.0
-                            )
-                            result_map[symbol] = (float(latest_price), float(change_pct))
+                            if valid_quotes:
+                                latest_price = valid_quotes[-1]
+                                change_pct = (
+                                    ((latest_price - prev_close) / prev_close) * 100
+                                    if prev_close > 0
+                                    else 0.0
+                                )
+                                result_map[symbol] = (float(latest_price), float(change_pct))
+                            else:
+                                # 프리장 체결 미발생 시 어제 종가 기준 대입
+                                result_map[symbol] = (float(reg_price), 0.0)
             except Exception:
                 pass
 
@@ -1072,7 +1072,6 @@ if df_input is not None and not df_input.empty:
                 f"📋 **포트폴리오 변동 내역** \n- {new_msg} \n- {out_msg}"
             )
 
-        # [핵심 수정] 한국장 개장 중(09:00~15:30)이어도 미국 직전 장 종가 변동률 및 히트맵 색상이 그대로 유지되도록 0.0 덮어쓰기 로직 삭제
         display_base_df = result_df.copy()
 
         # =========================================================

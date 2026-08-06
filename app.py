@@ -356,8 +356,8 @@ def get_timefolio_official_data(idx=2):
     return result
 
 
-def get_naver_realtime_prices_robust(symbols):
-    """네이버 모바일 증권 API를 활용해 프리장/본장 실시간 주가 및 환율 수집"""
+def get_yahoo_realtime_prices_robust(symbols):
+    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집 (애프터장 제외)"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -372,36 +372,66 @@ def get_naver_realtime_prices_robust(symbols):
             clean_symbols.append(sym_str)
 
     clean_symbols = list(set(clean_symbols))
-    result_map = {}
-    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"}
+    all_query_symbols = clean_symbols + ["USDKRW=X"]
+    symbols_param = ",".join(all_query_symbols)
 
-    for sym in clean_symbols:
-        try:
-            url = f"https://m.stock.naver.com/api/stock/{sym}/basic"
-            resp = requests.get(url, headers=headers, timeout=3)
-            if resp.status_code == 200:
-                data = resp.json()
-                close_price = data.get("closePrice", "0")
-                change_rate = data.get("fluctuationRate", "0")
-                
-                price_val = float(str(close_price).replace(",", ""))
-                change_val = float(str(change_rate).replace(",", ""))
-                
-                if price_val > 0:
-                    result_map[sym] = (price_val, change_val)
-        except Exception:
-            pass
+    session = requests.Session()
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+        "Referer": "https://finance.yahoo.com/",
+    }
+    session.headers.update(headers)
 
-    live_fx = 0.0
+    crumb = None
     try:
-        url_fx = "https://m.stock.naver.com/api/stock/FX_USDKRW/basic"
-        resp_fx = requests.get(url_fx, headers=headers, timeout=3)
-        if resp_fx.status_code == 200:
-            data_fx = resp_fx.json()
-            close_price_fx = data_fx.get("closePrice", "0")
-            live_fx = float(str(close_price_fx).replace(",", ""))
+        session.get("https://finance.yahoo.com/", timeout=4)
+        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
+        if resp_crumb.status_code == 200 and resp_crumb.text:
+            crumb = resp_crumb.text.strip()
     except Exception:
         pass
+
+    result_map, live_fx = {}, 0.0
+
+    endpoints = [
+        f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else ""),
+        f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
+    ]
+
+    for url in endpoints:
+        try:
+            resp = session.get(url, timeout=5)
+            if resp.status_code == 200:
+                quotes = resp.json().get("quoteResponse", {}).get("result", [])
+                for q in quotes:
+                    symbol = q.get("symbol", "").upper()
+
+                    if symbol == "USDKRW=X":
+                        live_fx = float(q.get("regularMarketPrice", 0.0))
+                        continue
+
+                    market_state = q.get("marketState", "")
+
+                    # [수정] PRE(프리장) 세션만 프리장 가격 적용, 애프터장(POST/POSTPOST)은 본장 종가(regularMarket)로 고정
+                    if market_state == "PRE" and "preMarketPrice" in q:
+                        price = q.get("preMarketPrice", 0.0)
+                        change_pct = q.get("preMarketChangePercent", 0.0)
+                    else:
+                        price = q.get("regularMarketPrice", 0.0)
+                        change_pct = q.get("regularMarketChangePercent", 0.0)
+
+                    result_map[symbol] = (float(price), float(change_pct))
+
+                if result_map:
+                    break
+        except Exception:
+            pass
 
     if live_fx == 0.0:
         try:
@@ -661,7 +691,7 @@ if df_input is not None and not df_input.empty:
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
 
-        batch_results, live_fx = get_naver_realtime_prices_robust(ticker_list)
+        batch_results, live_fx = get_yahoo_realtime_prices_robust(ticker_list)
 
         if live_fx == 0.0 and official_base_fx > 0:
             live_fx = official_base_fx

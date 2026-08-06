@@ -435,7 +435,7 @@ def get_yahoo_realtime_prices_robust(symbols):
         except Exception:
             pass
 
-    # 2. 프리장 v8 Chart API 파싱 (meta 객체의 preMarketPrice 직접 추출)
+    # 2. 프리장 v8 Chart API 파싱 (검증된 1분봉 최신 체결가 수집 알고리즘)
     missing_symbols = [
         s for s in all_query_symbols 
         if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
@@ -444,8 +444,9 @@ def get_yahoo_realtime_prices_robust(symbols):
     if missing_symbols or not result_map:
         for symbol in all_query_symbols:
             try:
-                v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d&includePrePost=true"
-                v8_resp = session.get(v8_url, timeout=3)
+                # 프리장 시세 수집을 위한 필수 쿼리 파라미터 조합
+                v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d&includePrePost=true&useYfid=true"
+                v8_resp = session.get(v8_url, headers=headers, timeout=4)
                 if v8_resp.status_code == 200:
                     chart_result = v8_resp.json().get("chart", {}).get("result", [])
                     if chart_result:
@@ -455,24 +456,27 @@ def get_yahoo_realtime_prices_robust(symbols):
                                 live_fx = float(meta.get("regularMarketPrice", 0.0))
                             continue
 
-                        reg_price = float(meta.get("regularMarketPrice", 0.0))  # 어제 본장 종가
-                        pre_price = meta.get("preMarketPrice")                  # meta 내 프리장 최신 체결가
+                        # 어제 본장 마감가 (정확한 기준가)
+                        reg_price = float(meta.get("regularMarketPrice", 0.0) or meta.get("chartPreviousClose", 0.0))
+                        pre_price_meta = meta.get("preMarketPrice")
 
                         raw_quotes = chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                         valid_quotes = [q for q in raw_quotes if q is not None]
 
                         if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            # 프리장 실시간 체결가가 존재하는 경우
-                            if pre_price is not None and float(pre_price) > 0 and reg_price > 0:
-                                latest_price = float(pre_price)
+                            latest_price = 0.0
+                            
+                            # 1순위: meta 내 preMarketPrice 직접 채택
+                            if pre_price_meta is not None and float(pre_price_meta) > 0:
+                                latest_price = float(pre_price_meta)
+                            # 2순위: 1분봉 배열의 최신 체결가 채택
+                            elif valid_quotes:
+                                latest_price = float(valid_quotes[-1])
+
+                            if latest_price > 0 and reg_price > 0:
                                 change_pct = ((latest_price - reg_price) / reg_price) * 100
                                 result_map[symbol] = (float(latest_price), float(change_pct))
-                            # 프리장 가격이 없을 때 차트 유효 봉 기준 계산
-                            elif valid_quotes and reg_price > 0:
-                                latest_price = valid_quotes[-1]
-                                change_pct = ((latest_price - reg_price) / reg_price) * 100
-                                result_map[symbol] = (float(latest_price), float(change_pct))
-                            else:
+                            elif reg_price > 0:
                                 result_map[symbol] = (float(reg_price), 0.0)
             except Exception:
                 pass

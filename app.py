@@ -7,7 +7,6 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
-import yfinance as yf
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
@@ -351,7 +350,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """yfinance의 download 기능(prepost=True)을 활용해 프리장 포함 실시간 가격 및 정확한 변동률 수집"""
+    """야후 파이낸스 v8 chart API를 개별 연동하여 프리장 실시간 체결가 및 정확한 변동률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -368,54 +367,48 @@ def get_yahoo_realtime_prices_robust(symbols):
     clean_symbols = list(set(clean_symbols))
     all_query_symbols = clean_symbols + ["USDKRW=X"]
 
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/127.0.0.0 Safari/537.36"
+        )
+    })
+
     result_map, live_fx = {}, 0.0
 
-    try:
-        # yfinance 1일치 prepost 포함 1분봉 배치 다운로드
-        df_batch = yf.download(
-            tickers=all_query_symbols,
-            period="2d",
-            interval="1m",
-            prepost=True,
-            progress=False,
-            auto_adjust=False,
-        )
+    for sym in all_query_symbols:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d&includePrePost=true"
+            resp = session.get(url, timeout=3)
+            if resp.status_code == 200:
+                json_res = resp.json()
+                chart_res = json_res.get("chart", {}).get("result", [])
+                if chart_res:
+                    meta = chart_res[0].get("meta", {})
+                    indicators = chart_res[0].get("indicators", {}).get("quote", [{}])[0]
+                    closes = indicators.get("close", [])
+                    
+                    # 가장 최신 유효 체결가
+                    valid_closes = [c for c in closes if c is not None]
+                    current_price = valid_closes[-1] if valid_closes else meta.get("regularMarketPrice", 0.0)
 
-        for sym in all_query_symbols:
-            try:
-                if len(all_query_symbols) > 1:
-                    close_series = df_batch["Close"][sym].dropna()
-                else:
-                    close_series = df_batch["Close"].dropna()
+                    if sym == "USDKRW=X":
+                        live_fx = float(current_price)
+                        continue
 
-                if close_series.empty:
-                    continue
+                    # 전일 본장 종가
+                    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose") or meta.get("regularMarketPreviousClose")
 
-                # 가장 최근 체결 단가
-                latest_price = float(close_series.iloc[-1])
+                    if current_price and prev_close and float(prev_close) > 0:
+                        change_pct = ((float(current_price) - float(prev_close)) / float(prev_close)) * 100.0
+                    else:
+                        change_pct = 0.0
 
-                if sym == "USDKRW=X":
-                    live_fx = latest_price
-                    continue
-
-                # Ticker fast_info에서 전일 본장 종가 수집
-                t_obj = yf.Ticker(sym)
-                reg_close = float(
-                    t_obj.fast_info.get("previousClose", 0.0)
-                    or t_obj.fast_info.get("lastPrice", 0.0)
-                )
-
-                if reg_close > 0 and latest_price > 0:
-                    change_pct = ((latest_price - reg_close) / reg_close) * 100.0
-                else:
-                    change_pct = 0.0
-
-                result_map[sym] = (latest_price, change_pct)
-            except Exception:
-                pass
-
-    except Exception:
-        pass
+                    result_map[sym] = (float(current_price), float(change_pct))
+        except Exception:
+            pass
 
     if "QQQ" in result_map:
         for s in symbols:

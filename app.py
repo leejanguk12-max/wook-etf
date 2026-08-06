@@ -96,7 +96,10 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
     """POST / GET 방식으로 타임폴리오 특정 날짜의 실제 PDF 구성종목을 크롤링합니다."""
     url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
         "Referer": url,
     }
     data = []
@@ -136,7 +139,10 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
                 amt_val = 0.0
                 for col_text in cols[1:-1]:
                     clean_txt = col_text.replace(",", "").strip()
-                    if clean_txt.replace(".", "", 1).isdigit() and float(clean_txt) > 1000:
+                    if (
+                        clean_txt.replace(".", "", 1).isdigit()
+                        and float(clean_txt) > 1000
+                    ):
                         try:
                             amt_val = float(clean_txt)
                             break
@@ -150,7 +156,9 @@ def get_timefolio_constituents_by_date(idx=2, date_str=None):
                     or "CASH" in raw_name.upper()
                     or "KRW" in raw_name.upper()
                     else (
-                        raw_code.split()[0].strip().upper() if raw_code.split() else ""
+                        raw_code.split()[0].strip().upper()
+                        if raw_code.split()
+                        else ""
                     )
                 )
                 if (
@@ -220,7 +228,9 @@ def get_naver_official_base_fx():
 
                 for ts, price in zip(timestamps, close_prices):
                     if price is not None:
-                        dt_kst = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Seoul"))
+                        dt_kst = datetime.fromtimestamp(
+                            ts, tz=ZoneInfo("Asia/Seoul")
+                        )
                         date_str = dt_kst.strftime("%Y-%m-%d")
 
                         if date_str <= target_dt_str:
@@ -260,7 +270,9 @@ def get_naver_etf_market_data(ticker_code="426030"):
 
         today_tag = soup.select_one("p.no_today em span.blind")
         if today_tag:
-            result["current_price"] = float(today_tag.text.strip().replace(",", ""))
+            result["current_price"] = float(
+                today_tag.text.strip().replace(",", "")
+            )
 
         rate_info = soup.select_one("div.rate_info")
         if rate_info:
@@ -376,7 +388,6 @@ def get_yahoo_realtime_prices_robust(symbols):
 
     result_map, live_fx = {}, 0.0
 
-    # 차단 회피형 yfinance 배치 수집 적용 (프리장/본장 실시간 체결가 완벽 보장)
     try:
         tickers_obj = yf.Tickers(" ".join(all_query_symbols))
         for symbol in all_query_symbols:
@@ -386,46 +397,71 @@ def get_yahoo_realtime_prices_robust(symbols):
                     continue
 
                 info = t.fast_info
-                reg_price = float(info.last_price or 0.0)
+                reg_price = float(info.last_price or 0.0)  # 어제 본장 종가
                 prev_close = float(info.previous_close or 0.0)
 
                 if symbol == "USDKRW=X":
                     live_fx = reg_price
                     continue
 
-                # yfinance를 통해 프리장 실시간 체결가 파싱 시도
-                latest_price = reg_price
+                latest_price = 0.0
+
+                # 1) yfinance Ticker 객체의 프리장 실시간 가격 속성 조회
                 try:
-                    # 1분봉 데이터 수집 (프리장 포함)
-                    hist = t.history(period="1d", interval="1m", prepost=True)
-                    if not hist.empty:
-                        latest_price = float(hist["Close"].iloc[-1])
+                    pre_price = t.info.get("preMarketPrice")
+                    if pre_price is not None and float(pre_price) > 0:
+                        latest_price = float(pre_price)
                 except Exception:
                     pass
 
+                # 2) 프리장 전용 속성이 없을 경우 1분봉(prepost=True) 중 오늘 체결봉 추출
+                if latest_price == 0.0:
+                    try:
+                        hist = t.history(period="1d", interval="1m", prepost=True)
+                        if not hist.empty:
+                            last_row = hist.iloc[-1]
+                            candidate_price = float(last_row["Close"])
+                            if abs(candidate_price - reg_price) > 1e-4:
+                                latest_price = candidate_price
+                    except Exception:
+                        pass
+
+                # 3) 최종 변동률 연산
                 if latest_price > 0 and reg_price > 0:
                     change_pct = ((latest_price - reg_price) / reg_price) * 100
                     result_map[symbol] = (float(latest_price), float(change_pct))
                 elif reg_price > 0:
-                    result_map[symbol] = (float(reg_price), 0.0)
+                    change_pct = (
+                        ((reg_price - prev_close) / prev_close) * 100
+                        if prev_close > 0
+                        else 0.0
+                    )
+                    result_map[symbol] = (float(reg_price), float(change_pct))
             except Exception:
                 pass
     except Exception:
         pass
 
-    # 환율 Fallback 처리
+    # 환율 Fallback
     if live_fx == 0.0:
         try:
             resp_fx = requests.post(
                 "https://scanner.tradingview.com/forex/scan",
-                json={"symbols": {"tickers": ["FX_IDC:USDKRW", "FX:USDKRW"]}, "columns": ["close"]},
+                json={
+                    "symbols": {"tickers": ["FX_IDC:USDKRW", "FX:USDKRW"]},
+                    "columns": ["close"],
+                },
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=4,
             )
             if resp_fx.status_code == 200:
                 data_fx = resp_fx.json().get("data", [])
                 if data_fx and data_fx[0].get("d"):
-                    live_fx = float(data_fx[0]["d"][0]) if data_fx[0]["d"][0] is not None else 0.0
+                    live_fx = (
+                        float(data_fx[0]["d"][0])
+                        if data_fx[0]["d"][0] is not None
+                        else 0.0
+                    )
         except Exception:
             pass
 
@@ -502,11 +538,15 @@ if uploaded_file is None:
         target_date_candidate = now_kst_dt.strftime("%Y-%m-%d")
 
         for _ in range(5):
-            df_input, _ = get_timefolio_constituents_by_date(idx=2, date_str=target_date_candidate)
+            df_input, _ = get_timefolio_constituents_by_date(
+                idx=2, date_str=target_date_candidate
+            )
             if df_input is not None and not df_input.empty:
                 current_pdf_date_str = target_date_candidate
                 break
-            target_date_candidate = get_prev_business_day(target_date_candidate)
+            target_date_candidate = get_prev_business_day(
+                target_date_candidate
+            )
 
         if df_input is None or df_input.empty:
             df_input, _ = get_timefolio_constituents_by_date(idx=2)
@@ -549,7 +589,9 @@ else:
                 if pd.notna(r[in_t_col])
                 else ""
             )
-            n_val = str(r[in_n_col]) if in_n_col and pd.notna(r[in_n_col]) else ""
+            n_val = (
+                str(r[in_n_col]) if in_n_col and pd.notna(r[in_n_col]) else ""
+            )
             w_val_raw = (
                 str(r[in_w_col]).replace("%", "").replace(",", "").strip()
                 if pd.notna(r[in_w_col])
@@ -608,7 +650,11 @@ else:
                     if pd.notna(r[p_t_col])
                     else ""
                 )
-                n_val = str(r[p_n_col]) if p_n_col and pd.notna(r[p_n_col]) else ""
+                n_val = (
+                    str(r[p_n_col])
+                    if p_n_col and pd.notna(r[p_n_col])
+                    else ""
+                )
                 w_val_raw = (
                     str(r[p_w_col]).replace("%", "").replace(",", "").strip()
                     if pd.notna(r[p_w_col])
@@ -625,7 +671,9 @@ else:
                 try:
                     w_val = float(w_val_raw)
                     if 0 < w_val <= 100:
-                        clean_prev_data.append({"종목코드": t_val, "비중": w_val})
+                        clean_prev_data.append(
+                            {"종목코드": t_val, "비중": w_val}
+                        )
                 except ValueError:
                     pass
             df_prev = (
@@ -637,7 +685,9 @@ else:
         st.error(f"엑셀 파일 읽기 오류: {e}")
 
 if df_input is not None and not df_input.empty:
-    date_info_msg = f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
+    date_info_msg = (
+        f" ({current_pdf_date_str} vs 전일)" if current_pdf_date_str else ""
+    )
     st.success(f"✅ 총 {len(df_input)}개 종목 로드 완료!{date_info_msg}")
 
     with st.spinner("실시간 시세 연산 중..."):
@@ -652,7 +702,10 @@ if df_input is not None and not df_input.empty:
                     p_code = "현금"
                 try:
                     prev_weight_map[p_code] = float(
-                        str(p_row["비중"]).replace("%", "").replace(",", "").strip()
+                        str(p_row["비중"])
+                        .replace("%", "")
+                        .replace(",", "")
+                        .strip()
                     )
                 except ValueError:
                     pass
@@ -693,7 +746,9 @@ if df_input is not None and not df_input.empty:
             if any(kw in ticker for kw in cash_keywords) or ticker == "KRW":
                 ticker = "현금"
             try:
-                weight = float(str(row["비중"]).replace("%", "").replace(",", "").strip())
+                weight = float(
+                    str(row["비중"]).replace("%", "").replace(",", "").strip()
+                )
             except ValueError:
                 weight = 0.0
             curr_tickers_map[ticker] = (weight, row)
@@ -706,7 +761,8 @@ if df_input is not None and not df_input.empty:
 
             weight, row_data = curr_tickers_map.get(ticker, (0.0, None))
             prev_w = prev_weight_map.get(
-                ticker, prev_weight_map.get("KRW", None) if ticker == "현금" else None
+                ticker,
+                prev_weight_map.get("KRW", None) if ticker == "현금" else None,
             )
 
             w_diff_val, prev_w_str, w_diff_str = 0.0, "-", "-"
@@ -805,14 +861,14 @@ if df_input is not None and not df_input.empty:
             )
 
             st.markdown(
-                "<div style='font-size: 14px; color: #6f727b; margin-bottom: 2px;'>🏷️"
-                " 현재가격</div>",
+                "<div style='font-size: 14px; color: #6f727b; margin-bottom:"
+                " 2px;'>🏷️ 현재가격</div>",
                 unsafe_allow_html=True,
             )
             st.markdown(
                 f"<p style='font-size: 42px; font-weight: normal; margin-bottom:"
-                f" 0px; line-height: 1.2; color: #1f1f1f;'>{current_etf_price:,.0f}"
-                f" 원 {chg_str}</p>",
+                f" 0px; line-height: 1.2; color:"
+                f" #1f1f1f;'>{current_etf_price:,.0f} 원 {chg_str}</p>",
                 unsafe_allow_html=True,
             )
             st.markdown(
@@ -825,7 +881,9 @@ if df_input is not None and not df_input.empty:
                 unsafe_allow_html=True,
             )
 
-        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='margin-top: 20px;'></div>", unsafe_allow_html=True
+        )
 
         (
             is_korean_market_hours,
@@ -847,7 +905,9 @@ if df_input is not None and not df_input.empty:
 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='margin-top: 20px;'></div>", unsafe_allow_html=True
+            )
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
@@ -873,7 +933,9 @@ if df_input is not None and not df_input.empty:
 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='margin-top: 20px;'></div>", unsafe_allow_html=True
+            )
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
@@ -887,6 +949,7 @@ if df_input is not None and not df_input.empty:
                 unsafe_allow_html=True,
             )
         else:
+
             def render_custom_metric(
                 label, value, delta_text, is_plus, extra_info=""
             ):
@@ -925,7 +988,9 @@ if df_input is not None and not df_input.empty:
                 delta_detail_html,
                 total_is_plus,
             )
-            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='margin-top: 20px;'></div>", unsafe_allow_html=True
+            )
 
             base_nav_reference = (
                 naver_nav
@@ -946,9 +1011,9 @@ if df_input is not None and not df_input.empty:
 
                 if current_etf_price > 0:
                     actual_vs_inav_pct = (
-                        ((estimated_inav_price - current_etf_price) / current_etf_price)
-                        * 100
-                    )
+                        (estimated_inav_price - current_etf_price)
+                        / current_etf_price
+                    ) * 100
                     actual_vs_inav_is_plus = actual_vs_inav_pct >= 0
                     actual_vs_inav_color = (
                         "#c62828" if actual_vs_inav_is_plus else "#0277bd"
@@ -1115,9 +1180,9 @@ if df_input is not None and not df_input.empty:
             else "-",
             axis=1,
         )
-        display_full_df["주가변동률(%)"] = display_full_df["주가변동률(%)"].apply(
-            lambda x: f"{x:+.2f}%"
-        )
+        display_full_df["주가변동률(%)"] = display_full_df[
+            "주가변동률(%)"
+        ].apply(lambda x: f"{x:+.2f}%")
 
         cols_to_show = [
             c

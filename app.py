@@ -357,7 +357,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집"""
+    """야후 파이낸스 API에서 프리장/본장/애프터마켓 시세를 강제 포착하는 로직"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -382,72 +382,67 @@ def get_yahoo_realtime_prices_robust(symbols):
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/122.0.0.0 Safari/537.36"
         ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+        "Accept": "*/*",
         "Referer": "https://finance.yahoo.com/",
     }
     session.headers.update(headers)
 
-    crumb = None
-    try:
-        session.get("https://finance.yahoo.com/", timeout=4)
-        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
-        if resp_crumb.status_code == 200 and resp_crumb.text:
-            crumb = resp_crumb.text.strip()
-    except Exception:
-        pass
-
     result_map, live_fx = {}, 0.0
 
-    endpoints = [
-        f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else ""),
-        f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
-    ]
+    # includePrePost=true 파라미터를 명시하여 프리장/애프터장 데이터를 필수 응답에 포함시킴
+    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}&includePrePost=true"
 
-    for url in endpoints:
-        try:
-            resp = session.get(url, timeout=5)
-            if resp.status_code == 200:
-                quotes = resp.json().get("quoteResponse", {}).get("result", [])
-                for q in quotes:
-                    symbol = q.get("symbol", "").upper()
+    try:
+        resp = session.get(url, timeout=6)
+        if resp.status_code == 200:
+            quotes = resp.json().get("quoteResponse", {}).get("result", [])
+            for q in quotes:
+                symbol = q.get("symbol", "").upper()
 
-                    if symbol == "USDKRW=X":
-                        live_fx = float(q.get("regularMarketPrice", 0.0))
-                        continue
+                if symbol == "USDKRW=X":
+                    live_fx = float(q.get("regularMarketPrice", 0.0))
+                    continue
 
-                    market_state = q.get("marketState", "")
-                    reg_price = float(q.get("regularMarketPrice", 0.0))
-                    pre_price = float(q.get("preMarketPrice", 0.0))
+                market_state = q.get("marketState", "").upper()
+                reg_price = float(q.get("regularMarketPrice", 0.0))
+                pre_price = float(q.get("preMarketPrice", 0.0))
+                post_price = float(q.get("postMarketPrice", 0.0))
 
-                    # 1) 프리장 상태이거나 preMarketPrice 데이터가 존재하는 경우
-                    if (market_state in ["PRE", "PREPRE"] or pre_price > 0) and pre_price > 0:
-                        price = pre_price
-                        if "preMarketChangePercent" in q and q["preMarketChangePercent"] is not None:
-                            raw_pct = float(q["preMarketChangePercent"])
-                            change_pct = raw_pct if abs(raw_pct) > 0.5 else raw_pct * 100
-                        elif reg_price > 0:
-                            change_pct = ((pre_price - reg_price) / reg_price) * 100
-                        else:
-                            change_pct = 0.0
+                # [개선] marketState 조건과 별개로 프리마켓 가격(preMarketPrice)이 추출되면 무조건 프리장 반영
+                if pre_price > 0 and (
+                    "PRE" in market_state
+                    or market_state in ["CLOSED", "PREPRE"]
+                    or ("preMarketChangePercent" in q)
+                ):
+                    price = pre_price
+                    raw_pct = q.get("preMarketChangePercent", None)
 
-                    # 2) 애프터마켓 상태인 경우
-                    elif market_state in ["POST", "POSTPOST"] and "postMarketPrice" in q:
-                        price = float(q.get("postMarketPrice", 0.0))
-                        raw_pct = float(q.get("postMarketChangePercent", 0.0))
-                        change_pct = raw_pct if abs(raw_pct) > 0.5 else raw_pct * 100
-
-                    # 3) 정규장 및 기본값
+                    if raw_pct is not None and float(raw_pct) != 0.0:
+                        val = float(raw_pct)
+                        change_pct = val if abs(val) > 0.5 else val * 100
+                    elif reg_price > 0:
+                        # API 상 퍼센트 누락 시 (프리장가 - 정규장종가) / 정규장종가 직접 연산
+                        change_pct = ((pre_price - reg_price) / reg_price) * 100
                     else:
-                        price = reg_price
-                        change_pct = float(q.get("regularMarketChangePercent", 0.0))
+                        change_pct = 0.0
 
-                    result_map[symbol] = (float(price), float(change_pct))
+                elif post_price > 0 and "POST" in market_state:
+                    price = post_price
+                    raw_pct = q.get("postMarketChangePercent", None)
+                    if raw_pct is not None:
+                        val = float(raw_pct)
+                        change_pct = val if abs(val) > 0.5 else val * 100
+                    elif reg_price > 0:
+                        change_pct = ((post_price - reg_price) / reg_price) * 100
+                    else:
+                        change_pct = 0.0
+                else:
+                    price = reg_price
+                    change_pct = float(q.get("regularMarketChangePercent", 0.0))
 
-                if result_map:
-                    break
-        except Exception:
-            pass
+                result_map[symbol] = (float(price), float(change_pct))
+    except Exception:
+        pass
 
     if live_fx == 0.0:
         try:

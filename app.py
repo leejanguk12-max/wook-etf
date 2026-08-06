@@ -369,7 +369,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_realtime_prices_by_session(symbols):
-    """현재 세션 상태에 따라 프리장은 트레이딩뷰, 본장은 Finnhub API를 각각 명확히 호출 (속도 최적화 버전)"""
+    """현재 세션 상태에 따라 프리장은 트레이딩뷰, 본장은 Finnhub API를 각각 명확히 호출"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -387,14 +387,18 @@ def get_realtime_prices_by_session(symbols):
     result_map = {}
     live_fx = 0.0
 
-    _, _, _, _, now_kst, is_dst = get_market_session_status()
+    # 현재 시장 세션 상태 확인 (본장 시간인지 프리장/기타 시간인지 판단)
+    _, _, is_pre_delay_buffer, is_reg_delay_buffer, now_kst, is_dst = get_market_session_status()
     current_time_val = now_kst.hour * 60 + now_kst.minute
     reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
+    reg_end_val = (5 * 60) if is_dst else (6 * 60) # 대략적인 정규장 마감 시간 근처 판별용
 
+    # 본장 시간대 판별 (정규장 개장 시간 이후 ~ 마감 전)
+    # ※ 필요에 따라 세션 판단 로직을 조절할 수 있습니다.
     is_regular_session = (current_time_val >= reg_start_val) or (current_time_val < 6 * 60)
 
     if not is_regular_session:
-        # 프리장 시간대: 트레이딩뷰 스캐너 API
+        # 1. [프리장 시간대] 트레이딩뷰 스캐너 API 전용 호출
         tv_symbols = [f"NASDAQ:{s}" if s != "QQQ" else "NASDAQ:QQQ" for s in clean_symbols]
         try:
             tv_payload = {
@@ -428,13 +432,12 @@ def get_realtime_prices_by_session(symbols):
         except Exception:
             pass
     else:
-        # 본장 시간대: Finnhub API (지연 시간 0.01초로 대폭 단축 및 세션 재사용으로 속도 최적화)
+        # 2. [본장 시간대] Finnhub API 전용 호출
         finnhub_key = st.secrets.get("FINNHUB_API_KEY", "d9op4bpr01qnvunojplgd9op4bpr01qnvunojpm0")
-        session = requests.Session()
         for s in clean_symbols:
             try:
                 url = f"https://finnhub.io/api/v1/quote?symbol={s}&token={finnhub_key}"
-                resp_fh = session.get(url, timeout=3)
+                resp_fh = requests.get(url, timeout=4)
                 if resp_fh.status_code == 200:
                     fh_data = resp_fh.json()
                     current_p = float(fh_data.get("c", 0.0))
@@ -442,11 +445,11 @@ def get_realtime_prices_by_session(symbols):
                     if current_p > 0 and prev_close_p > 0:
                         change_p = ((current_p - prev_close_p) / prev_close_p) * 100
                         result_map[s] = (current_p, change_p)
-                time.sleep(0.01)  # 로딩 속도를 빠르게 하기 위해 딜레이를 0.01초로 최소화
+                time.sleep(0.05)  # Finnhub Rate Limit 방지용 딜레이
             except Exception:
                 pass
 
-    # 환율(USDKRW=X) 수집 로직
+    # 환율(USDKRW=X) 수집 로직 (기존 유지)
     session = requests.Session()
     headers = {
         "User-Agent": (
@@ -462,8 +465,8 @@ def get_realtime_prices_by_session(symbols):
 
     crumb = None
     try:
-        session.get("https://finance.yahoo.com/", timeout=3)
-        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=3)
+        session.get("https://finance.yahoo.com/", timeout=4)
+        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
         if resp_crumb.status_code == 200 and resp_crumb.text:
             crumb = resp_crumb.text.strip()
     except Exception:
@@ -471,7 +474,7 @@ def get_realtime_prices_by_session(symbols):
 
     try:
         fx_url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols=USDKRW=X" + (f"&crumb={crumb}" if crumb else "")
-        resp_fx = session.get(fx_url, timeout=4)
+        resp_fx = session.get(fx_url, timeout=5)
         if resp_fx.status_code == 200:
             quotes = resp_fx.json().get("quoteResponse", {}).get("result", [])
             for q in quotes:
@@ -487,7 +490,7 @@ def get_realtime_prices_by_session(symbols):
                 "https://scanner.tradingview.com/forex/scan",
                 json={"symbols": {"tickers": ["FX_IDC:USDKRW", "FX:USDKRW"]}, "columns": ["close"]},
                 headers={"User-Agent": "Mozilla/5.0"},
-                timeout=3,
+                timeout=4,
             )
             if resp_fx.status_code == 200:
                 data_fx = resp_fx.json().get("data", [])

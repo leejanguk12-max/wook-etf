@@ -53,8 +53,9 @@ def get_market_session_status():
 
     is_dst = dst_start <= now_kst < dst_end
     premarket_start_val = (17 if is_dst else 18) * 60  # 17:00 / 18:00
+    reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)  # 22:30 / 23:30
 
-    # 주말 판별 (토요일 09:00 이후 ~ 월요일 17:00 전)
+    # 주말 판별
     is_weekend_closed = (
         (weekday == 5 and now_kst.hour >= 9)
         or (weekday == 6)
@@ -68,9 +69,19 @@ def get_market_session_status():
         and (korean_market_close <= current_time_val < premarket_start_val)
     )
 
+    # 프리장 시작 후 15분 지연 버퍼 구간 판별
+    is_pre_delay_buffer = (not is_weekend_closed) and (
+        premarket_start_val <= current_time_val < (premarket_start_val + 15)
+    )
+    is_reg_delay_buffer = (not is_weekend_closed) and (
+        reg_start_val <= current_time_val < (reg_start_val + 15)
+    )
+
     return (
         is_korean_market_hours,
         is_weekday_waiting,
+        is_pre_delay_buffer,
+        is_reg_delay_buffer,
         now_kst,
         is_dst,
     )
@@ -357,7 +368,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_finnhub_realtime_prices_robust(symbols):
-    """Finnhub API를 이용해 프리장/본장 실시간 주가 및 환율 수집"""
+    """트레이딩뷰 스캐너 API(프리장) 및 Finnhub API(본장)를 연동하여 실시간 가격 및 변동률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -372,40 +383,94 @@ def get_finnhub_realtime_prices_robust(symbols):
             clean_symbols.append(sym_str)
 
     clean_symbols = list(set(clean_symbols))
-    all_query_symbols = clean_symbols + ["OANDA:USD_KRW"]
+    result_map = {}
+    live_fx = 0.0
 
+    # 1. 트레이딩뷰 스캐너 API를 통해 프리장 실시간 가격/변동률 수집 시도
+    tv_symbols = [f"NASDAQ:{s}" if s != "QQQ" else "NASDAQ:QQQ" for s in clean_symbols]
+    try:
+        tv_payload = {
+            "symbols": {"tickers": tv_symbols},
+            "columns": ["close", "change", "premarket_close", "premarket_change", "premarket_change_abs", "market"]
+        }
+        resp_tv = requests.post(
+            "https://scanner.tradingview.com/america/scan",
+            json=tv_payload,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5
+        )
+        if resp_tv.status_code == 200:
+            tv_data = resp_tv.json().get("data", [])
+            for item in tv_data:
+                s_name = item.get("s", "").split(":")[-1].upper()
+                d_vals = item.get("d", [])
+                if len(d_vals) >= 4:
+                    close_val = d_vals[0] or 0.0
+                    close_chg = d_vals[1] or 0.0
+                    pm_close = d_vals[2]
+                    pm_chg = d_vals[3]
+
+                    if pm_close is not None and pm_close > 0:
+                        p_val = float(pm_close)
+                        c_val = float(pm_chg) if pm_chg is not None else 0.0
+                    else:
+                        p_val = float(close_val)
+                        c_val = float(close_chg)
+                    result_map[s_name] = (p_val, c_val)
+    except Exception:
+        pass
+
+    # 2. Finnhub API를 통해 본장 가격 및 변동률 수집
     finnhub_key = st.secrets.get("FINNHUB_API_KEY", "d9op4bpr01qnvunojplgd9op4bpr01qnvunojpm0")
-    result_map, live_fx = {}, 0.0
+    for s in clean_symbols:
+        if s not in result_map or result_map[s][0] == 0.0:
+            try:
+                url = f"https://finnhub.io/api/v1/quote?symbol={s}&token={finnhub_key}"
+                resp_fh = requests.get(url, timeout=4)
+                if resp_fh.status_code == 200:
+                    fh_data = resp_fh.json()
+                    current_p = float(fh_data.get("c", 0.0))  # Current price
+                    prev_close_p = float(fh_data.get("pc", 0.0))  # Previous close price
+                    if current_p > 0 and prev_close_p > 0:
+                        change_p = ((current_p - prev_close_p) / prev_close_p) * 100
+                        result_map[s] = (current_p, change_p)
+            except Exception:
+                pass
 
-    for symbol in all_query_symbols:
-        try:
-            if symbol == "OANDA:USD_KRW":
-                url = f"https://finnhub.io/api/v1/forex/symbol?exchange=oanda&token={finnhub_key}"
-                # Use quote endpoint for FX
-                fx_url = f"https://finnhub.io/api/v1/quote?symbol=OANDA:USD_KRW&token={finnhub_key}"
-                resp = requests.get(fx_url, timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    price = data.get("c", 0.0)
-                    if price and price > 0:
-                        live_fx = float(price)
-            else:
-                # 1. Get quote for regular price and previous close
-                quote_url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={finnhub_key}"
-                resp = requests.get(quote_url, timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    current_price = data.get("c", 0.0)
-                    prev_close = data.get("pc", 0.0)
-                    
-                    change_pct = 0.0
-                    if prev_close and prev_close > 0:
-                        change_pct = ((current_price - prev_close) / prev_close) * 100
+    # 환율(USDKRW=X) 수집을 위한 야후/트레이딩뷰 로직 유지
+    session = requests.Session()
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+        "Referer": "https://finance.yahoo.com/",
+    }
+    session.headers.update(headers)
 
-                    # 2. Check if pre-market data is available or check indicator if needed. Finnhub basic quote `c` handles current available market price.
-                    result_map[symbol] = (float(current_price), float(change_pct))
-        except Exception:
-            pass
+    crumb = None
+    try:
+        session.get("https://finance.yahoo.com/", timeout=4)
+        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
+        if resp_crumb.status_code == 200 and resp_crumb.text:
+            crumb = resp_crumb.text.strip()
+    except Exception:
+        pass
+
+    try:
+        fx_url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols=USDKRW=X" + (f"&crumb={crumb}" if crumb else "")
+        resp_fx = session.get(fx_url, timeout=5)
+        if resp_fx.status_code == 200:
+            quotes = resp_fx.json().get("quoteResponse", {}).get("result", [])
+            for q in quotes:
+                if q.get("symbol", "").upper() == "USDKRW=X":
+                    live_fx = float(q.get("regularMarketPrice", 0.0))
+                    break
+    except Exception:
+        pass
 
     if live_fx == 0.0:
         try:
@@ -823,6 +888,8 @@ if df_input is not None and not df_input.empty:
         (
             is_korean_market_hours,
             is_weekday_waiting,
+            is_pre_delay_buffer,
+            is_reg_delay_buffer,
             now_kst,
             is_dst,
         ) = get_market_session_status()
@@ -831,7 +898,7 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률 (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
 <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
@@ -844,7 +911,7 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
 <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
@@ -857,7 +924,7 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률 (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
 <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 미국 프리마켓 시작시 실시간 추정치가 제공됩니다.
@@ -870,10 +937,44 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
 <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 미국 프리마켓 시작시 실시간 추정치가 제공됩니다.
+</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+        elif is_pre_delay_buffer or is_reg_delay_buffer:
+            pre_next_time = "17:15" if is_dst else "18:15"
+            reg_next_time = "22:45" if is_dst else "23:45"
+            delay_label = (
+                f"프리장 15분 지연데이터 대기 중 ⏳ ({pre_next_time}부터 제공)"
+                if is_pre_delay_buffer
+                else f"본장 15분 지연데이터 대기 중 ⏳ ({reg_next_time}부터 제공)"
+            )
+
+            st.markdown(
+                f"""
+<div style="margin-bottom: 10px;">
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률 (15분 지연)</div>
+<div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">{delay_label}</div>
+<div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
+ℹ️ 미국 시장 개장 후 15분간은 지연 시세 반영 대기 시간입니다.
+</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"""
+<div style="margin-bottom: 10px;">
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)</div>
+<div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">{delay_label}</div>
+<div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
+ℹ️ 미국 시장 개장 후 15분간은 지연 시세 반영 대기 시간입니다.
 </div>
 </div>
 """,
@@ -913,7 +1014,7 @@ if df_input is not None and not df_input.empty:
             )
 
             render_custom_metric(
-                "📈 실시간 iNAV 추정 총 변동률",
+                "📈 실시간 iNAV 추정 총 변동률 (15분 지연)",
                 f"{total_inav_change:+.2f}%",
                 delta_detail_html,
                 total_is_plus,
@@ -951,7 +1052,7 @@ if df_input is not None and not df_input.empty:
                     inav_extra_info = ""
 
                 render_custom_metric(
-                    "💵 나스닥100액티브(426030) 예상 iNAV",
+                    "💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)",
                     f"{estimated_inav_price:,.0f} 원",
                     f"{diff_val:+,.0f} 원 (기준 iNAV: {base_nav_reference:,.0f}원)",
                     diff_is_plus,
@@ -1005,7 +1106,7 @@ if df_input is not None and not df_input.empty:
         display_base_df = result_df.copy()
 
         # =========================================================
-        # 🔥 히트맵 (현금 항목 제외 및 하단 컬러바 제거 적용)
+        # 🔥 히트맵
         # =========================================================
         st.markdown("---")
         active_df = display_base_df[

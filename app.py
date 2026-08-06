@@ -435,13 +435,18 @@ def get_yahoo_realtime_prices_robust(symbols):
         except Exception:
             pass
 
-    # 2. 프리장 시세 보완 (v7 실패 시 v8 Chart API 적용 및 어제 본장 종가 대비 순수 프리장 변동률 계산)
+    # 2. 프리장 타임스탬프 필터링 보완 (오늘 프리장 시간대의 실제 체결분만 계산)
     missing_symbols = [
         s for s in all_query_symbols 
         if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
     ]
 
     if missing_symbols or not result_map:
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        # 오늘 미국 프리마켓 시작 시각 (한국시간 17:00 KST 기준 타임스탬프)
+        pre_market_start_kst = now_kst.replace(hour=17, minute=0, second=0, microsecond=0)
+        pre_start_ts = int(pre_market_start_kst.timestamp())
+
         for symbol in all_query_symbols:
             try:
                 v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d&includePrePost=true"
@@ -456,23 +461,24 @@ def get_yahoo_realtime_prices_robust(symbols):
                             continue
 
                         reg_price = float(meta.get("regularMarketPrice", 0.0))  # 어제 본장 종가
-
-                        # 1분 단위 유효 체결가 배열 파싱
+                        timestamps = chart_result[0].get("timestamp", [])
                         raw_quotes = chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                        valid_quotes = [q for q in raw_quotes if q is not None]
+
+                        # 타임스탬프 기반: 오늘 프리장(17:00 이후) 체결 데이터만 검증 추출
+                        pre_quotes = []
+                        if timestamps and raw_quotes and len(timestamps) == len(raw_quotes):
+                            for ts, price in zip(timestamps, raw_quotes):
+                                if ts >= pre_start_ts and price is not None:
+                                    pre_quotes.append(price)
 
                         if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            if valid_quotes and reg_price > 0:
-                                latest_price = valid_quotes[-1]
-                                
-                                # 어제 본장 종가(reg_price) 대비 오늘 프리장 순수 변동률 계산
-                                if abs(latest_price - reg_price) < 1e-5:
-                                    change_pct = 0.0
-                                else:
-                                    change_pct = ((latest_price - reg_price) / reg_price) * 100
-                                
-                                result_map[symbol] = (float(latest_price), float(change_pct))
+                            if pre_quotes and reg_price > 0:
+                                # 오늘 프리장 최신 체결가 추출
+                                latest_pre_price = pre_quotes[-1]
+                                change_pct = ((latest_pre_price - reg_price) / reg_price) * 100
+                                result_map[symbol] = (float(latest_pre_price), float(change_pct))
                             else:
+                                # 프리장 체결 미발생/시작 전일 경우 어제 종가 기준 대입 및 변동률 0.0%
                                 result_map[symbol] = (float(reg_price), 0.0)
             except Exception:
                 pass

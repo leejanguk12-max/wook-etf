@@ -53,8 +53,9 @@ def get_market_session_status():
 
     is_dst = dst_start <= now_kst < dst_end
     premarket_start_val = (17 if is_dst else 18) * 60  # 17:00 / 18:00
+    reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)  # 22:30 / 23:30
 
-    # 주말 판별 (토요일 09:00 이후 ~ 월요일 17:00 전)
+    # 주말 판별
     is_weekend_closed = (
         (weekday == 5 and now_kst.hour >= 9)
         or (weekday == 6)
@@ -68,9 +69,19 @@ def get_market_session_status():
         and (korean_market_close <= current_time_val < premarket_start_val)
     )
 
+    # 프리장 시작 후 15분 지연 버퍼 구간 판별
+    is_pre_delay_buffer = (not is_weekend_closed) and (
+        premarket_start_val <= current_time_val < (premarket_start_val + 15)
+    )
+    is_reg_delay_buffer = (not is_weekend_closed) and (
+        reg_start_val <= current_time_val < (reg_start_val + 15)
+    )
+
     return (
         is_korean_market_hours,
         is_weekday_waiting,
+        is_pre_delay_buffer,
+        is_reg_delay_buffer,
         now_kst,
         is_dst,
     )
@@ -393,14 +404,12 @@ def get_yahoo_realtime_prices_robust(symbols):
             for item in tv_data:
                 s_name = item.get("s", "").split(":")[-1].upper()
                 d_vals = item.get("d", [])
-                # d 구조: [close, change, premarket_close, premarket_change, ...]
                 if len(d_vals) >= 4:
                     close_val = d_vals[0] or 0.0
                     close_chg = d_vals[1] or 0.0
                     pm_close = d_vals[2]
                     pm_chg = d_vals[3]
 
-                    # 프리마켓 데이터가 존재하면 프리장 가격 및 변동률 우선 적용
                     if pm_close is not None and pm_close > 0:
                         p_val = float(pm_close)
                         c_val = float(pm_chg) if pm_chg is not None else 0.0
@@ -454,7 +463,6 @@ def get_yahoo_realtime_prices_robust(symbols):
                         live_fx = float(q.get("regularMarketPrice", 0.0))
                         continue
 
-                    # 트레이딩뷰에서 값을 못 가져온 종목에 한해 야후 데이터 적용
                     if symbol not in result_map or result_map[symbol][0] == 0.0:
                         market_state = q.get("marketState", "")
                         if market_state == "PRE" and "preMarketPrice" in q and q.get("preMarketPrice"):
@@ -886,6 +894,8 @@ if df_input is not None and not df_input.empty:
         (
             is_korean_market_hours,
             is_weekday_waiting,
+            is_pre_delay_buffer,
+            is_reg_delay_buffer,
             now_kst,
             is_dst,
         ) = get_market_session_status()
@@ -894,7 +904,7 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률 (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
 <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
@@ -907,7 +917,7 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">한국시장 거래중</div>
 <div style="display: inline-block; background-color: #e3f2fd; color: #0277bd; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 장중에는 실시간 가격과 괴리율을 참고하세요.
@@ -920,7 +930,7 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률 (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
 <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 미국 프리마켓 시작시 실시간 추정치가 제공됩니다.
@@ -933,10 +943,44 @@ if df_input is not None and not df_input.empty:
             st.markdown(
                 """
 <div style="margin-bottom: 10px;">
-<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV</div>
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)</div>
 <div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">미국 프리마켓 대기 중 ⏳</div>
 <div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
 ℹ️ 미국 프리마켓 시작시 실시간 추정치가 제공됩니다.
+</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+        elif is_pre_delay_buffer or is_reg_delay_buffer:
+            pre_next_time = "17:15" if is_dst else "18:15"
+            reg_next_time = "22:45" if is_dst else "23:45"
+            delay_label = (
+                f"프리장 15분 지연데이터 대기 중 ⏳ ({pre_next_time}부터 제공)"
+                if is_pre_delay_buffer
+                else f"본장 15분 지연데이터 대기 중 ⏳ ({reg_next_time}부터 제공)"
+            )
+
+            st.markdown(
+                f"""
+<div style="margin-bottom: 10px;">
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">📈 실시간 iNAV 추정 총 변동률 (15분 지연)</div>
+<div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">{delay_label}</div>
+<div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
+ℹ️ 미국 시장 개장 후 15분간은 지연 시세 반영 대기 시간입니다.
+</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"""
+<div style="margin-bottom: 10px;">
+<div style="font-size: 14px; color: #6f727b; margin-bottom: 2px;">💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)</div>
+<div style="font-size: 32px; font-weight: normal; color: #1f1f1f; line-height: 1.2; margin-bottom: 4px;">{delay_label}</div>
+<div style="display: inline-block; background-color: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 12px; font-size: 13px; font-weight: 500;">
+ℹ️ 미국 시장 개장 후 15분간은 지연 시세 반영 대기 시간입니다.
 </div>
 </div>
 """,
@@ -976,7 +1020,7 @@ if df_input is not None and not df_input.empty:
             )
 
             render_custom_metric(
-                "📈 실시간 iNAV 추정 총 변동률",
+                "📈 실시간 iNAV 추정 총 변동률 (15분 지연)",
                 f"{total_inav_change:+.2f}%",
                 delta_detail_html,
                 total_is_plus,
@@ -1014,7 +1058,7 @@ if df_input is not None and not df_input.empty:
                     inav_extra_info = ""
 
                 render_custom_metric(
-                    "💵 나스닥100액티브(426030) 예상 iNAV",
+                    "💵 나스닥100액티브(426030) 예상 iNAV (15분 지연)",
                     f"{estimated_inav_price:,.0f} 원",
                     f"{diff_val:+,.0f} 원 (기준 iNAV: {base_nav_reference:,.0f}원)",
                     diff_is_plus,
@@ -1068,7 +1112,7 @@ if df_input is not None and not df_input.empty:
         display_base_df = result_df.copy()
 
         # =========================================================
-        # 🔥 히트맵 (현금 항목 제외 및 하단 컬러바 제거 적용)
+        # 🔥 히트맵
         # =========================================================
         st.markdown("---")
         active_df = display_base_df[

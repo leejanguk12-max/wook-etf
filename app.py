@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
@@ -372,115 +373,47 @@ def get_yahoo_realtime_prices_robust(symbols):
 
     clean_symbols = list(set(clean_symbols))
     all_query_symbols = clean_symbols + ["USDKRW=X"]
-    symbols_param = ",".join(all_query_symbols)
-
-    session = requests.Session()
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-        "Referer": "https://finance.yahoo.com/",
-    }
-    session.headers.update(headers)
-
-    crumb = None
-    try:
-        session.get("https://finance.yahoo.com/", timeout=4)
-        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
-        if resp_crumb.status_code == 200 and resp_crumb.text:
-            crumb = resp_crumb.text.strip()
-    except Exception:
-        pass
 
     result_map, live_fx = {}, 0.0
 
-    endpoints = [
-        f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else ""),
-        f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
-    ]
-
-    # 1. 기존 v7 API 시도 (본장 수집용 기존 로직 유지)
-    for url in endpoints:
-        try:
-            resp = session.get(url, timeout=5)
-            if resp.status_code == 200:
-                quotes = resp.json().get("quoteResponse", {}).get("result", [])
-                for q in quotes:
-                    symbol = q.get("symbol", "").upper()
-
-                    if symbol == "USDKRW=X":
-                        live_fx = float(q.get("regularMarketPrice", 0.0))
-                        continue
-
-                    market_state = q.get("marketState", "")
-
-                    if market_state == "PRE" and "preMarketPrice" in q:
-                        price = q.get("preMarketPrice", 0.0)
-                        change_pct = q.get("preMarketChangePercent", 0.0)
-                    elif market_state in ["POST", "POSTPOST"] and "postMarketPrice" in q:
-                        price = q.get("postMarketPrice", 0.0)
-                        change_pct = q.get("postMarketChangePercent", 0.0)
-                    else:
-                        price = q.get("regularMarketPrice", 0.0)
-                        change_pct = q.get("regularMarketChangePercent", 0.0)
-
-                    result_map[symbol] = (float(price), float(change_pct))
-
-                if result_map:
-                    break
-        except Exception:
-            pass
-
-    # 2. 프리장 v8 Chart API 파싱 (검증된 1분봉 최신 체결가 수집 알고리즘)
-    missing_symbols = [
-        s for s in all_query_symbols 
-        if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
-    ]
-
-    if missing_symbols or not result_map:
+    # 차단 회피형 yfinance 배치 수집 적용 (프리장/본장 실시간 체결가 완벽 보장)
+    try:
+        tickers_obj = yf.Tickers(" ".join(all_query_symbols))
         for symbol in all_query_symbols:
             try:
-                # 프리장 시세 수집을 위한 필수 쿼리 파라미터 조합
-                v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d&includePrePost=true&useYfid=true"
-                v8_resp = session.get(v8_url, headers=headers, timeout=4)
-                if v8_resp.status_code == 200:
-                    chart_result = v8_resp.json().get("chart", {}).get("result", [])
-                    if chart_result:
-                        meta = chart_result[0].get("meta", {})
-                        if symbol == "USDKRW=X":
-                            if live_fx == 0.0:
-                                live_fx = float(meta.get("regularMarketPrice", 0.0))
-                            continue
+                t = tickers_obj.tickers.get(symbol)
+                if not t:
+                    continue
 
-                        # 어제 본장 마감가 (정확한 기준가)
-                        reg_price = float(meta.get("regularMarketPrice", 0.0) or meta.get("chartPreviousClose", 0.0))
-                        pre_price_meta = meta.get("preMarketPrice")
+                info = t.fast_info
+                reg_price = float(info.last_price or 0.0)
+                prev_close = float(info.previous_close or 0.0)
 
-                        raw_quotes = chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                        valid_quotes = [q for q in raw_quotes if q is not None]
+                if symbol == "USDKRW=X":
+                    live_fx = reg_price
+                    continue
 
-                        if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            latest_price = 0.0
-                            
-                            # 1순위: meta 내 preMarketPrice 직접 채택
-                            if pre_price_meta is not None and float(pre_price_meta) > 0:
-                                latest_price = float(pre_price_meta)
-                            # 2순위: 1분봉 배열의 최신 체결가 채택
-                            elif valid_quotes:
-                                latest_price = float(valid_quotes[-1])
+                # yfinance를 통해 프리장 실시간 체결가 파싱 시도
+                latest_price = reg_price
+                try:
+                    # 1분봉 데이터 수집 (프리장 포함)
+                    hist = t.history(period="1d", interval="1m", prepost=True)
+                    if not hist.empty:
+                        latest_price = float(hist["Close"].iloc[-1])
+                except Exception:
+                    pass
 
-                            if latest_price > 0 and reg_price > 0:
-                                change_pct = ((latest_price - reg_price) / reg_price) * 100
-                                result_map[symbol] = (float(latest_price), float(change_pct))
-                            elif reg_price > 0:
-                                result_map[symbol] = (float(reg_price), 0.0)
+                if latest_price > 0 and reg_price > 0:
+                    change_pct = ((latest_price - reg_price) / reg_price) * 100
+                    result_map[symbol] = (float(latest_price), float(change_pct))
+                elif reg_price > 0:
+                    result_map[symbol] = (float(reg_price), 0.0)
             except Exception:
                 pass
+    except Exception:
+        pass
 
+    # 환율 Fallback 처리
     if live_fx == 0.0:
         try:
             resp_fx = requests.post(

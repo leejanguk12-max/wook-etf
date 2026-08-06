@@ -350,7 +350,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집 (애프터장 제외)"""
+    """야후 파이낸스 최신 헤더 세션 쿠키 연동으로 프리장/본장 실시간 주가 수집 우회"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -369,22 +369,28 @@ def get_yahoo_realtime_prices_robust(symbols):
     symbols_param = ",".join(all_query_symbols)
 
     session = requests.Session()
+    # 야후 차단 방지를 위한 최신 Chrome User-Agent 및 Fetch 헤더
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
+            "Chrome/127.0.0.0 Safari/537.36"
         ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://finance.yahoo.com",
         "Referer": "https://finance.yahoo.com/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
     }
     session.headers.update(headers)
 
     crumb = None
     try:
-        session.get("https://finance.yahoo.com/", timeout=4)
-        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=4)
+        # 야후 세션 쿠키 및 Crumb 발급
+        session.get("https://fc.yahoo.com", timeout=3)
+        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=3)
         if resp_crumb.status_code == 200 and resp_crumb.text:
             crumb = resp_crumb.text.strip()
     except Exception:
@@ -392,10 +398,11 @@ def get_yahoo_realtime_prices_robust(symbols):
 
     result_map, live_fx = {}, 0.0
 
-    endpoints = [
-        f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else ""),
-        f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
-    ]
+    # 1차 query1 + crumb, 2차 query2, 3차 차트 API 백업
+    endpoints = []
+    if crumb:
+        endpoints.append(f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}&crumb={crumb}")
+    endpoints.append(f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}")
 
     for url in endpoints:
         try:
@@ -413,12 +420,9 @@ def get_yahoo_realtime_prices_robust(symbols):
                     reg_price = float(q.get("regularMarketPrice", 0.0) or 0.0)
                     pre_price = q.get("preMarketPrice")
 
-                    # 프리장 세션(PRE, PREPRE, EARLY)이거나 preMarketPrice 데이터가 존재하는 경우
-                    is_premarket = market_state in ["PRE", "PREPRE", "EARLY"] or pre_price is not None
-
-                    if is_premarket and pre_price is not None and float(pre_price) > 0:
+                    # 프리장 시세가 수신된 경우
+                    if pre_price is not None and float(pre_price) > 0 and market_state in ["PRE", "PREPRE", "EARLY"]:
                         price = float(pre_price)
-                        # 🔥 전일 본장 종가(reg_price) 대비 프리장 가격(price)의 변동률 직접 연산
                         if reg_price > 0:
                             change_pct = ((price - reg_price) / reg_price) * 100.0
                         else:
@@ -433,6 +437,22 @@ def get_yahoo_realtime_prices_robust(symbols):
                     break
         except Exception:
             pass
+
+    # 만약 세션 차단으로 단체 query 시세 요청에서 preMarketPrice가 누락된 경우, 개별 v8 chart API 백업 연동
+    if result_map and any(v[0] > 0 and v[1] == 0.0 for k, v in result_map.items() if k != "QQQ"):
+        for sym in clean_symbols[:10]:  # 상위 주요 종목 차트 API 보완
+            try:
+                chart_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d&includePrePost=true"
+                r_chart = session.get(chart_url, timeout=3)
+                if r_chart.status_code == 200:
+                    meta = r_chart.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+                    c_price = meta.get("regularMarketPrice", 0.0)
+                    p_close = meta.get("chartPreviousClose", 0.0)
+                    if c_price > 0 and p_close > 0:
+                        chg = ((c_price - p_close) / p_close) * 100.0
+                        result_map[sym] = (c_price, chg)
+            except Exception:
+                pass
 
     if live_fx == 0.0:
         try:
@@ -1003,8 +1023,8 @@ if df_input is not None and not df_input.empty:
                 else "대기 중"
             )
             base_date_str = (
-                f" ({timefolio_data['base_date']})"
-                if timefolio_data["base_date"]
+                f" ({timefolio_date['base_date']})"
+                if timefolio_data.get("base_date")
                 else ""
             )
 

@@ -357,6 +357,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
+    """야후 파이낸스 direct 호출을 주 엔진으로 사용해 프리장/본장 실시간 수집 (애프터장 제외)"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -374,6 +375,7 @@ def get_yahoo_realtime_prices_robust(symbols):
     all_query_symbols = clean_symbols + ["USDKRW=X"]
     symbols_param = ",".join(all_query_symbols)
 
+    # 야후 파이낸스 인증 세션 생성
     session = requests.Session()
     headers = {
         "User-Agent": (
@@ -398,6 +400,7 @@ def get_yahoo_realtime_prices_robust(symbols):
 
     result_map, live_fx = {}, 0.0
 
+    # 1) 야후 파이낸스 v7 Direct Quote API 우선 호출
     endpoints = [
         f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else ""),
         f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
@@ -415,25 +418,27 @@ def get_yahoo_realtime_prices_robust(symbols):
                         live_fx = float(q.get("regularMarketPrice", 0.0))
                         continue
 
-                    market_state = q.get("marketState", "")
+                    market_state = str(q.get("marketState", "")).upper()
+                    pre_price = q.get("preMarketPrice", None)
+                    pre_change = q.get("preMarketChangePercent", None)
 
-                    if market_state == "PRE" and "preMarketPrice" in q:
-                        price = q.get("preMarketPrice", 0.0)
-                        change_pct = q.get("preMarketChangePercent", 0.0)
-                    elif market_state in ["POST", "POSTPOST"] and "postMarketPrice" in q:
-                        price = q.get("postMarketPrice", 0.0)
-                        change_pct = q.get("postMarketChangePercent", 0.0)
+                    # 프리마켓 세션이거나 preMarketPrice가 존재하면 실시간 프리장 변동률 우선 연동
+                    if ("PRE" in market_state or "EARLY" in market_state) or (pre_price is not None and pre_price > 0):
+                        price = float(pre_price) if (pre_price is not None and pre_price > 0) else float(q.get("regularMarketPrice", 0.0))
+                        change_pct = float(pre_change) if (pre_change is not None) else float(q.get("regularMarketChangePercent", 0.0))
                     else:
-                        price = q.get("regularMarketPrice", 0.0)
-                        change_pct = q.get("regularMarketChangePercent", 0.0)
+                        # 본장 시세 및 애프터마켓 시간대 고정 (애프터장 제외)
+                        price = float(q.get("regularMarketPrice", 0.0))
+                        change_pct = float(q.get("regularMarketChangePercent", 0.0))
 
-                    result_map[symbol] = (float(price), float(change_pct))
+                    result_map[symbol] = (price, change_pct)
 
                 if result_map:
                     break
         except Exception:
             pass
 
+    # 2) 환율 보완 (트레이딩뷰 Forex 스캐너)
     if live_fx == 0.0:
         try:
             resp_fx = requests.post(
@@ -1029,7 +1034,6 @@ if df_input is not None and not df_input.empty:
                 f"📋 **포트폴리오 변동 내역** \n- {new_msg} \n- {out_msg}"
             )
 
-        # [핵심 수정] 한국장 개장 중(09:00~15:30)이어도 미국 직전 장 종가 변동률 및 히트맵 색상이 그대로 유지되도록 0.0 덮어쓰기 로직 삭제
         display_base_df = result_df.copy()
 
         # =========================================================

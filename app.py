@@ -7,7 +7,6 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
-import yfinance as yf
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
@@ -357,8 +356,8 @@ def get_timefolio_official_data(idx=2):
     return result
 
 
-def get_yf_realtime_prices_robust(symbols):
-    """yfinance 라이브러리를 사용하여 종목별 실시간/프리장 가격 및 등락률 수집"""
+def get_naver_realtime_prices_robust(symbols):
+    """네이버 금융 API를 통한 미국 주식 실시간/프리장 시세 및 등락률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -374,27 +373,40 @@ def get_yf_realtime_prices_robust(symbols):
 
     clean_symbols = list(set(clean_symbols))
     result_map = {}
-    live_fx = 0.0
-
-    try:
-        fx_ticker = yf.Ticker("USDKRW=X")
-        fx_info = fx_ticker.fast_info
-        live_fx = float(fx_info.get("lastPrice", 0.0))
-    except Exception:
-        pass
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://m.stock.naver.com/"
+    }
 
     for sym in clean_symbols:
         try:
-            t = yf.Ticker(sym)
-            info = t.fast_info
-            last_price = float(info.get("lastPrice", 0.0))
-            prev_close = float(info.get("previousClose", 0.0))
-            
-            if last_price > 0 and prev_close > 0:
-                change_pct = ((last_price - prev_close) / prev_close) * 100
-                result_map[sym] = (last_price, change_pct)
+            url = f"https://api.stock.naver.com/stock/{sym}/basic"
+            resp = requests.get(url, headers=headers, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                close_price = str(data.get("closePrice", "0")).replace(",", "")
+                change_rate = str(data.get("fluctuationRate", "0")).replace(",", "")
+                
+                price_val = float(close_price) if close_price.replace(".", "", 1).isdigit() else 0.0
+                change_val = float(change_rate) if change_rate.replace(".", "", 1).replace("-", "", 1).isdigit() else 0.0
+                
+                if price_val > 0:
+                    result_map[sym] = (price_val, change_val)
         except Exception:
             pass
+
+    live_fx = 0.0
+    try:
+        url_fx = "https://api.stock.naver.com/marketIndex/exchangeRate"
+        resp_fx = requests.get(url_fx, headers=headers, timeout=3)
+        if resp_fx.status_code == 200:
+            for item in resp_fx.json():
+                if item.get("marketIndexItemCode") == "FX_USDKRW":
+                    fx_val = str(item.get("closePrice", "0")).replace(",", "")
+                    live_fx = float(fx_val) if fx_val.replace(".", "", 1).isdigit() else 0.0
+                    break
+    except Exception:
+        pass
 
     if live_fx == 0.0:
         try:
@@ -654,7 +666,7 @@ if df_input is not None and not df_input.empty:
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
 
-        batch_results, live_fx = get_yf_realtime_prices_robust(ticker_list)
+        batch_results, live_fx = get_naver_realtime_prices_robust(ticker_list)
 
         if live_fx == 0.0 and official_base_fx > 0:
             live_fx = official_base_fx

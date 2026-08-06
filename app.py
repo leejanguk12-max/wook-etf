@@ -357,7 +357,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_naver_realtime_prices_robust(symbols):
-    """네이버 증권 모바일 API를 사용하여 종목별 실시간/프리장 주가 및 등락률 수집"""
+    """네이버 금융 모바일 API 및 검색 페이지를 활용해 해외 주가 및 환율 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -381,11 +381,11 @@ def get_naver_realtime_prices_robust(symbols):
             resp = requests.get(url, headers=headers, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()
-                close_price = data.get("closePrice", "0")
-                change_rate = data.get("fluctuationRate", "0")
+                close_price = str(data.get("closePrice", "0")).replace(",", "")
+                change_rate = str(data.get("fluctuationRate", "0")).replace(",", "")
                 
-                price_val = float(str(close_price).replace(",", ""))
-                change_val = float(str(change_rate).replace(",", ""))
+                price_val = float(close_price) if close_price.replace(".", "", 1).isdigit() else 0.0
+                change_val = float(change_rate) if change_rate.replace(".", "", 1).replace("-", "", 1).isdigit() else 0.0
                 
                 if price_val > 0:
                     result_map[sym] = (price_val, change_val)
@@ -398,8 +398,8 @@ def get_naver_realtime_prices_robust(symbols):
         resp_fx = requests.get(url_fx, headers=headers, timeout=3)
         if resp_fx.status_code == 200:
             data_fx = resp_fx.json()
-            close_price_fx = data_fx.get("closePrice", "0")
-            live_fx = float(str(close_price_fx).replace(",", ""))
+            close_price_fx = str(data_fx.get("closePrice", "0")).replace(",", "")
+            live_fx = float(close_price_fx) if close_price_fx.replace(".", "", 1).isdigit() else 0.0
     except Exception:
         pass
 

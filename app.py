@@ -403,7 +403,7 @@ def get_yahoo_realtime_prices_robust(symbols):
         f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
     ]
 
-    # 1. 기존 v7 API 시도 (본장 정규장 수집용 유지)
+    # 1. 기존 v7 API 시도 (본장 수집용 기존 로직 유지)
     for url in endpoints:
         try:
             resp = session.get(url, timeout=5)
@@ -435,7 +435,7 @@ def get_yahoo_realtime_prices_robust(symbols):
         except Exception:
             pass
 
-    # 2. 프리장 시세 보완 (v7 수집 실패 시 또는 프리장 시세 누락 시 v8 Chart API 적용)
+    # 2. 프리장 시세 보완 (v7 실패 시 v8 Chart API 적용 및 어제 본장 종가 대비 순수 프리장 변동률 계산)
     missing_symbols = [
         s for s in all_query_symbols 
         if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
@@ -455,24 +455,24 @@ def get_yahoo_realtime_prices_robust(symbols):
                                 live_fx = float(meta.get("regularMarketPrice", 0.0))
                             continue
 
-                        prev_close = float(meta.get("previousClose", 0.0))
-                        reg_price = float(meta.get("regularMarketPrice", 0.0))
+                        reg_price = float(meta.get("regularMarketPrice", 0.0))  # 어제 본장 종가
 
                         # 1분 단위 유효 체결가 배열 파싱
                         raw_quotes = chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                         valid_quotes = [q for q in raw_quotes if q is not None]
 
                         if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            if valid_quotes:
+                            if valid_quotes and reg_price > 0:
                                 latest_price = valid_quotes[-1]
-                                change_pct = (
-                                    ((latest_price - prev_close) / prev_close) * 100
-                                    if prev_close > 0
-                                    else 0.0
-                                )
+                                
+                                # 어제 본장 종가(reg_price) 대비 오늘 프리장 순수 변동률 계산
+                                if abs(latest_price - reg_price) < 1e-5:
+                                    change_pct = 0.0
+                                else:
+                                    change_pct = ((latest_price - reg_price) / reg_price) * 100
+                                
                                 result_map[symbol] = (float(latest_price), float(change_pct))
                             else:
-                                # 프리장 체결 미발생 시 어제 종가 기준 대입
                                 result_map[symbol] = (float(reg_price), 0.0)
             except Exception:
                 pass

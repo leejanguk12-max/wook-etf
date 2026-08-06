@@ -357,7 +357,6 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """세션 쿠키/Crumb 수집으로 야후 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집 (애프터장 제외)"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -416,15 +415,14 @@ def get_yahoo_realtime_prices_robust(symbols):
                         live_fx = float(q.get("regularMarketPrice", 0.0))
                         continue
 
-                    market_state = q.get("marketState", "").upper()
+                    market_state = q.get("marketState", "")
 
-                    # [정밀 보완] 프리장 가격(preMarketPrice) 존재 여부 및 marketState 상태 정밀 체크
-                    pre_price = q.get("preMarketPrice", 0.0)
-                    pre_change = q.get("preMarketChangePercent", 0.0)
-
-                    if ("PRE" in market_state or "EARLY" in market_state) and pre_price and pre_price > 0:
-                        price = pre_price
-                        change_pct = pre_change
+                    if market_state == "PRE" and "preMarketPrice" in q:
+                        price = q.get("preMarketPrice", 0.0)
+                        change_pct = q.get("preMarketChangePercent", 0.0)
+                    elif market_state in ["POST", "POSTPOST"] and "postMarketPrice" in q:
+                        price = q.get("postMarketPrice", 0.0)
+                        change_pct = q.get("postMarketChangePercent", 0.0)
                     else:
                         price = q.get("regularMarketPrice", 0.0)
                         change_pct = q.get("regularMarketChangePercent", 0.0)
@@ -1031,6 +1029,7 @@ if df_input is not None and not df_input.empty:
                 f"📋 **포트폴리오 변동 내역** \n- {new_msg} \n- {out_msg}"
             )
 
+        # [핵심 수정] 한국장 개장 중(09:00~15:30)이어도 미국 직전 장 종가 변동률 및 히트맵 색상이 그대로 유지되도록 0.0 덮어쓰기 로직 삭제
         display_base_df = result_df.copy()
 
         # =========================================================

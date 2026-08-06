@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import io
 import re
+import time
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -367,8 +368,8 @@ def get_timefolio_official_data(idx=2):
     return result
 
 
-def get_finnhub_realtime_prices_robust(symbols):
-    """트레이딩뷰 스캐너 API(프리장) 및 Finnhub API(본장)를 연동하여 실시간 가격 및 변동률 수집"""
+def get_realtime_prices_by_session(symbols):
+    """현재 세션 상태에 따라 프리장은 트레이딩뷰, 본장은 Finnhub API를 각각 명확히 호출"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -386,58 +387,69 @@ def get_finnhub_realtime_prices_robust(symbols):
     result_map = {}
     live_fx = 0.0
 
-    # 1. 트레이딩뷰 스캐너 API를 통해 프리장 실시간 가격/변동률 수집 시도
-    tv_symbols = [f"NASDAQ:{s}" if s != "QQQ" else "NASDAQ:QQQ" for s in clean_symbols]
-    try:
-        tv_payload = {
-            "symbols": {"tickers": tv_symbols},
-            "columns": ["close", "change", "premarket_close", "premarket_change", "premarket_change_abs", "market"]
-        }
-        resp_tv = requests.post(
-            "https://scanner.tradingview.com/america/scan",
-            json=tv_payload,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=5
-        )
-        if resp_tv.status_code == 200:
-            tv_data = resp_tv.json().get("data", [])
-            for item in tv_data:
-                s_name = item.get("s", "").split(":")[-1].upper()
-                d_vals = item.get("d", [])
-                if len(d_vals) >= 4:
-                    close_val = d_vals[0] or 0.0
-                    close_chg = d_vals[1] or 0.0
-                    pm_close = d_vals[2]
-                    pm_chg = d_vals[3]
+    # 현재 시장 세션 상태 확인 (본장 시간인지 프리장/기타 시간인지 판단)
+    _, _, is_pre_delay_buffer, is_reg_delay_buffer, now_kst, is_dst = get_market_session_status()
+    current_time_val = now_kst.hour * 60 + now_kst.minute
+    reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
+    reg_end_val = (5 * 60) if is_dst else (6 * 60) # 대략적인 정규장 마감 시간 근처 판별용
 
-                    if pm_close is not None and pm_close > 0:
-                        p_val = float(pm_close)
-                        c_val = float(pm_chg) if pm_chg is not None else 0.0
-                    else:
-                        p_val = float(close_val)
-                        c_val = float(close_chg)
-                    result_map[s_name] = (p_val, c_val)
-    except Exception:
-        pass
+    # 본장 시간대 판별 (정규장 개장 시간 이후 ~ 마감 전)
+    # ※ 필요에 따라 세션 판단 로직을 조절할 수 있습니다.
+    is_regular_session = (current_time_val >= reg_start_val) or (current_time_val < 6 * 60)
 
-    # 2. Finnhub API를 통해 본장 가격 및 변동률 수집
-    finnhub_key = st.secrets.get("FINNHUB_API_KEY", "d9op4bpr01qnvunojplgd9op4bpr01qnvunojpm0")
-    for s in clean_symbols:
-        if s not in result_map or result_map[s][0] == 0.0:
+    if not is_regular_session:
+        # 1. [프리장 시간대] 트레이딩뷰 스캐너 API 전용 호출
+        tv_symbols = [f"NASDAQ:{s}" if s != "QQQ" else "NASDAQ:QQQ" for s in clean_symbols]
+        try:
+            tv_payload = {
+                "symbols": {"tickers": tv_symbols},
+                "columns": ["close", "change", "premarket_close", "premarket_change", "premarket_change_abs", "market"]
+            }
+            resp_tv = requests.post(
+                "https://scanner.tradingview.com/america/scan",
+                json=tv_payload,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5
+            )
+            if resp_tv.status_code == 200:
+                tv_data = resp_tv.json().get("data", [])
+                for item in tv_data:
+                    s_name = item.get("s", "").split(":")[-1].upper()
+                    d_vals = item.get("d", [])
+                    if len(d_vals) >= 4:
+                        close_val = d_vals[0] or 0.0
+                        close_chg = d_vals[1] or 0.0
+                        pm_close = d_vals[2]
+                        pm_chg = d_vals[3]
+
+                        if pm_close is not None and pm_close > 0:
+                            p_val = float(pm_close)
+                            c_val = float(pm_chg) if pm_chg is not None else 0.0
+                        else:
+                            p_val = float(close_val)
+                            c_val = float(close_chg)
+                        result_map[s_name] = (p_val, c_val)
+        except Exception:
+            pass
+    else:
+        # 2. [본장 시간대] Finnhub API 전용 호출
+        finnhub_key = st.secrets.get("FINNHUB_API_KEY", "d9op4bpr01qnvunojplgd9op4bpr01qnvunojpm0")
+        for s in clean_symbols:
             try:
                 url = f"https://finnhub.io/api/v1/quote?symbol={s}&token={finnhub_key}"
                 resp_fh = requests.get(url, timeout=4)
                 if resp_fh.status_code == 200:
                     fh_data = resp_fh.json()
-                    current_p = float(fh_data.get("c", 0.0))  # Current price
-                    prev_close_p = float(fh_data.get("pc", 0.0))  # Previous close price
+                    current_p = float(fh_data.get("c", 0.0))
+                    prev_close_p = float(fh_data.get("pc", 0.0))
                     if current_p > 0 and prev_close_p > 0:
                         change_p = ((current_p - prev_close_p) / prev_close_p) * 100
                         result_map[s] = (current_p, change_p)
+                time.sleep(0.05)  # Finnhub Rate Limit 방지용 딜레이
             except Exception:
                 pass
 
-    # 환율(USDKRW=X) 수집을 위한 야후/트레이딩뷰 로직 유지
+    # 환율(USDKRW=X) 수집 로직 (기존 유지)
     session = requests.Session()
     headers = {
         "User-Agent": (
@@ -730,7 +742,7 @@ if df_input is not None and not df_input.empty:
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
 
-        batch_results, live_fx = get_finnhub_realtime_prices_robust(ticker_list)
+        batch_results, live_fx = get_realtime_prices_by_session(ticker_list)
 
         if live_fx == 0.0 and official_base_fx > 0:
             live_fx = official_base_fx

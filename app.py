@@ -1023,7 +1023,7 @@ if df_input is not None and not df_input.empty:
                 else "대기 중"
             )
             base_date_str = (
-                f" ({timefolio_date['base_date']})"
+                f" ({timefolio_data['base_date']})"
                 if timefolio_data.get("base_date")
                 else ""
             )

@@ -394,7 +394,6 @@ def get_realtime_prices_by_session(symbols):
     reg_end_val = (5 * 60) if is_dst else (6 * 60) # 대략적인 정규장 마감 시간 근처 판별용
 
     # 본장 시간대 판별 (정규장 개장 시간 이후 ~ 마감 전)
-    # ※ 필요에 따라 세션 판단 로직을 조절할 수 있습니다.
     is_regular_session = (current_time_val >= reg_start_val) or (current_time_val < 6 * 60)
 
     if not is_regular_session:
@@ -906,17 +905,13 @@ if df_input is not None and not df_input.empty:
             is_dst,
         ) = get_market_session_status()
 
-        # 프리장 시간대(프리장 버퍼 포함)인지 여부 판단
-        premarket_start_val = (17 if is_dst else 18) * 60
-        reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
+        # 본장 및 프리장 세션 판별 로직 통일
         current_time_val = now_kst.hour * 60 + now_kst.minute
-        is_premarket_session = (
-            (not is_korean_market_hours)
-            and (not is_weekday_waiting)
-            and (current_time_val < reg_start_val)
-        )
+        reg_start_val = (22 * 60 + 30) if is_dst else (23 * 60 + 30)
+        is_regular_session = (current_time_val >= reg_start_val) or (current_time_val < 6 * 60)
 
-        inav_title_suffix = " (15분 지연)" if is_premarket_session else ""
+        # 프리장에서만 (15분 지연) 표기하고, 본장에서는 제거
+        inav_title_suffix = "" if is_regular_session else " (15분 지연)"
 
         if is_korean_market_hours:
             st.markdown(

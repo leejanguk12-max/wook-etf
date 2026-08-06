@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
@@ -356,8 +357,8 @@ def get_timefolio_official_data(idx=2):
     return result
 
 
-def get_naver_realtime_prices_robust(symbols):
-    """네이버 금융 모바일 웹 페이지 크롤링을 통해 미국 주식 가격 및 등락률 수집"""
+def get_yf_realtime_prices_robust(symbols):
+    """yfinance 라이브러리를 사용하여 종목별 실시간/프리장 가격 및 등락률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -373,51 +374,27 @@ def get_naver_realtime_prices_robust(symbols):
 
     clean_symbols = list(set(clean_symbols))
     result_map = {}
-    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"}
+    live_fx = 0.0
+
+    try:
+        fx_ticker = yf.Ticker("USDKRW=X")
+        fx_info = fx_ticker.fast_info
+        live_fx = float(fx_info.get("lastPrice", 0.0))
+    except Exception:
+        pass
 
     for sym in clean_symbols:
         try:
-            url = f"https://m.stock.naver.com/worldstock/stock/{sym}/total"
-            resp = requests.get(url, headers=headers, timeout=3)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                
-                # 네이버 모바일 증권 페이지의 현재가 및 등락률 파싱 시도
-                price_elem = soup.select_one(".price") or soup.select_one(".no_today")
-                rate_elem = soup.select_one(".rate") or soup.select_one(".no_exday")
-                
-                price_val, change_val = 0.0, 0.0
-                if price_elem:
-                    p_txt = price_elem.get_text().replace(",", "").strip()
-                    m_p = re.search(r"([\d\.]+)", p_txt)
-                    if m_p:
-                        price_val = float(m_p.group(1))
-                
-                if rate_elem:
-                    r_txt = rate_elem.get_text().strip()
-                    is_down = "하락" in r_txt or "down" in rate_elem.decode() or "-" in r_txt
-                    m_r = re.search(r"([\d\.]+)", r_txt)
-                    if m_r:
-                        change_val = float(m_r.group(1))
-                        if is_down and change_val > 0 and "-" not in r_txt:
-                            change_val = -change_val
-
-                if price_val > 0:
-                    result_map[sym] = (price_val, change_val)
+            t = yf.Ticker(sym)
+            info = t.fast_info
+            last_price = float(info.get("lastPrice", 0.0))
+            prev_close = float(info.get("previousClose", 0.0))
+            
+            if last_price > 0 and prev_close > 0:
+                change_pct = ((last_price - prev_close) / prev_close) * 100
+                result_map[sym] = (last_price, change_pct)
         except Exception:
             pass
-
-    live_fx = 0.0
-    try:
-        url_fx = "https://m.stock.naver.com/marketindex/home/exchangeRate"
-        resp_fx = requests.get("https://m.stock.naver.com/api/marketIndex/exchangeRate", headers=headers, timeout=3)
-        if resp_fx.status_code == 200:
-            for item in resp_fx.json():
-                if item.get("marketIndexItemCode") == "FX_USDKRW":
-                    live_fx = float(str(item.get("closePrice", "0")).replace(",", ""))
-                    break
-    except Exception:
-        pass
 
     if live_fx == 0.0:
         try:
@@ -677,7 +654,7 @@ if df_input is not None and not df_input.empty:
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
 
-        batch_results, live_fx = get_naver_realtime_prices_robust(ticker_list)
+        batch_results, live_fx = get_yf_realtime_prices_robust(ticker_list)
 
         if live_fx == 0.0 and official_base_fx > 0:
             live_fx = official_base_fx

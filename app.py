@@ -435,7 +435,7 @@ def get_yahoo_realtime_prices_robust(symbols):
         except Exception:
             pass
 
-    # 2. 프리장 v8 Chart API 파싱 (직접 링크 원시 데이터 추출 방식 적용)
+    # 2. 프리장 v8 Chart API 파싱 (meta 객체의 preMarketPrice 직접 추출)
     missing_symbols = [
         s for s in all_query_symbols 
         if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
@@ -456,12 +456,20 @@ def get_yahoo_realtime_prices_robust(symbols):
                             continue
 
                         reg_price = float(meta.get("regularMarketPrice", 0.0))  # 어제 본장 종가
+                        pre_price = meta.get("preMarketPrice")                  # meta 내 프리장 최신 체결가
+
                         raw_quotes = chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                         valid_quotes = [q for q in raw_quotes if q is not None]
 
                         if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            if valid_quotes and reg_price > 0:
-                                latest_price = valid_quotes[-1]  # 최신 체결가
+                            # 프리장 실시간 체결가가 존재하는 경우
+                            if pre_price is not None and float(pre_price) > 0 and reg_price > 0:
+                                latest_price = float(pre_price)
+                                change_pct = ((latest_price - reg_price) / reg_price) * 100
+                                result_map[symbol] = (float(latest_price), float(change_pct))
+                            # 프리장 가격이 없을 때 차트 유효 봉 기준 계산
+                            elif valid_quotes and reg_price > 0:
+                                latest_price = valid_quotes[-1]
                                 change_pct = ((latest_price - reg_price) / reg_price) * 100
                                 result_map[symbol] = (float(latest_price), float(change_pct))
                             else:

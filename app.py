@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(page_title="타임폴리오 ETF 실시간 대시보드", layout="wide")
 
@@ -350,7 +351,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """야후 파이낸스 최신 헤더 세션 쿠키 연동으로 프리장/본장 실시간 주가 수집 우회"""
+    """yfinance의 download 기능(prepost=True)을 활용해 프리장 포함 실시간 가격 및 정확한 변동률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -366,108 +367,55 @@ def get_yahoo_realtime_prices_robust(symbols):
 
     clean_symbols = list(set(clean_symbols))
     all_query_symbols = clean_symbols + ["USDKRW=X"]
-    symbols_param = ",".join(all_query_symbols)
-
-    session = requests.Session()
-    # 야후 차단 방지를 위한 최신 Chrome User-Agent 및 Fetch 헤더
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/127.0.0.0 Safari/537.36"
-        ),
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://finance.yahoo.com",
-        "Referer": "https://finance.yahoo.com/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-    }
-    session.headers.update(headers)
-
-    crumb = None
-    try:
-        # 야후 세션 쿠키 및 Crumb 발급
-        session.get("https://fc.yahoo.com", timeout=3)
-        resp_crumb = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=3)
-        if resp_crumb.status_code == 200 and resp_crumb.text:
-            crumb = resp_crumb.text.strip()
-    except Exception:
-        pass
 
     result_map, live_fx = {}, 0.0
 
-    # 1차 query1 + crumb, 2차 query2, 3차 차트 API 백업
-    endpoints = []
-    if crumb:
-        endpoints.append(f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}&crumb={crumb}")
-    endpoints.append(f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}")
+    try:
+        # yfinance 1일치 prepost 포함 1분봉 배치 다운로드
+        df_batch = yf.download(
+            tickers=all_query_symbols,
+            period="2d",
+            interval="1m",
+            prepost=True,
+            progress=False,
+            auto_adjust=False,
+        )
 
-    for url in endpoints:
-        try:
-            resp = session.get(url, timeout=5)
-            if resp.status_code == 200:
-                quotes = resp.json().get("quoteResponse", {}).get("result", [])
-                for q in quotes:
-                    symbol = q.get("symbol", "").upper()
-
-                    if symbol == "USDKRW=X":
-                        live_fx = float(q.get("regularMarketPrice", 0.0))
-                        continue
-
-                    market_state = str(q.get("marketState", "")).upper()
-                    reg_price = float(q.get("regularMarketPrice", 0.0) or 0.0)
-                    pre_price = q.get("preMarketPrice")
-
-                    # 프리장 시세가 수신된 경우
-                    if pre_price is not None and float(pre_price) > 0 and market_state in ["PRE", "PREPRE", "EARLY"]:
-                        price = float(pre_price)
-                        if reg_price > 0:
-                            change_pct = ((price - reg_price) / reg_price) * 100.0
-                        else:
-                            change_pct = float(q.get("preMarketChangePercent", 0.0) or 0.0)
-                    else:
-                        price = reg_price
-                        change_pct = float(q.get("regularMarketChangePercent", 0.0) or 0.0)
-
-                    result_map[symbol] = (price, change_pct)
-
-                if result_map:
-                    break
-        except Exception:
-            pass
-
-    # 만약 세션 차단으로 단체 query 시세 요청에서 preMarketPrice가 누락된 경우, 개별 v8 chart API 백업 연동
-    if result_map and any(v[0] > 0 and v[1] == 0.0 for k, v in result_map.items() if k != "QQQ"):
-        for sym in clean_symbols[:10]:  # 상위 주요 종목 차트 API 보완
+        for sym in all_query_symbols:
             try:
-                chart_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d&includePrePost=true"
-                r_chart = session.get(chart_url, timeout=3)
-                if r_chart.status_code == 200:
-                    meta = r_chart.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
-                    c_price = meta.get("regularMarketPrice", 0.0)
-                    p_close = meta.get("chartPreviousClose", 0.0)
-                    if c_price > 0 and p_close > 0:
-                        chg = ((c_price - p_close) / p_close) * 100.0
-                        result_map[sym] = (c_price, chg)
+                if len(all_query_symbols) > 1:
+                    close_series = df_batch["Close"][sym].dropna()
+                else:
+                    close_series = df_batch["Close"].dropna()
+
+                if close_series.empty:
+                    continue
+
+                # 가장 최근 체결 단가
+                latest_price = float(close_series.iloc[-1])
+
+                if sym == "USDKRW=X":
+                    live_fx = latest_price
+                    continue
+
+                # Ticker fast_info에서 전일 본장 종가 수집
+                t_obj = yf.Ticker(sym)
+                reg_close = float(
+                    t_obj.fast_info.get("previousClose", 0.0)
+                    or t_obj.fast_info.get("lastPrice", 0.0)
+                )
+
+                if reg_close > 0 and latest_price > 0:
+                    change_pct = ((latest_price - reg_close) / reg_close) * 100.0
+                else:
+                    change_pct = 0.0
+
+                result_map[sym] = (latest_price, change_pct)
             except Exception:
                 pass
 
-    if live_fx == 0.0:
-        try:
-            resp_fx = requests.post(
-                "https://scanner.tradingview.com/forex/scan",
-                json={"symbols": {"tickers": ["FX_IDC:USDKRW", "FX:USDKRW"]}, "columns": ["close"]},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=4,
-            )
-            if resp_fx.status_code == 200:
-                data_fx = resp_fx.json().get("data", [])
-                if data_fx and data_fx[0].get("d"):
-                    live_fx = float(data_fx[0]["d"][0]) if data_fx[0]["d"][0] is not None else 0.0
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     if "QQQ" in result_map:
         for s in symbols:

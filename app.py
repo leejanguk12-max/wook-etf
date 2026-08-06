@@ -357,7 +357,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집 (애프터장 제외)"""
+    """야후 v7 본장 데이터와 트레이딩뷰 스캐너 API를 연동하여 프리장 실시간 가격 및 변동률 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -372,6 +372,46 @@ def get_yahoo_realtime_prices_robust(symbols):
             clean_symbols.append(sym_str)
 
     clean_symbols = list(set(clean_symbols))
+    result_map = {}
+    live_fx = 0.0
+
+    # 1. 트레이딩뷰 스캐너 API를 통해 프리장 실시간 가격/변동률 수집 시도
+    tv_symbols = [f"NASDAQ:{s}" if s != "QQQ" else "NASDAQ:QQQ" for s in clean_symbols]
+    try:
+        tv_payload = {
+            "symbols": {"tickers": tv_symbols},
+            "columns": ["close", "change", "premarket_close", "premarket_change", "premarket_change_abs", "market"]
+        }
+        resp_tv = requests.post(
+            "https://scanner.tradingview.com/america/scan",
+            json=tv_payload,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5
+        )
+        if resp_tv.status_code == 200:
+            tv_data = resp_tv.json().get("data", [])
+            for item in tv_data:
+                s_name = item.get("s", "").split(":")[-1].upper()
+                d_vals = item.get("d", [])
+                # d 구조: [close, change, premarket_close, premarket_change, ...]
+                if len(d_vals) >= 4:
+                    close_val = d_vals[0] or 0.0
+                    close_chg = d_vals[1] or 0.0
+                    pm_close = d_vals[2]
+                    pm_chg = d_vals[3]
+
+                    # 프리마켓 데이터가 존재하면 프리장 가격 및 변동률 우선 적용
+                    if pm_close is not None and pm_close > 0:
+                        p_val = float(pm_close)
+                        c_val = float(pm_chg) if pm_chg is not None else 0.0
+                    else:
+                        p_val = float(close_val)
+                        c_val = float(close_chg)
+                    result_map[s_name] = (p_val, c_val)
+    except Exception:
+        pass
+
+    # 2. 야후 파이낸스(기존 본장/세션 로직)를 통해 보완 및 환율 수집
     all_query_symbols = clean_symbols + ["USDKRW=X"]
     symbols_param = ",".join(all_query_symbols)
 
@@ -397,8 +437,6 @@ def get_yahoo_realtime_prices_robust(symbols):
     except Exception:
         pass
 
-    result_map, live_fx = {}, 0.0
-
     endpoints = [
         f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}" + (f"&crumb={crumb}" if crumb else ""),
         f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
@@ -416,17 +454,16 @@ def get_yahoo_realtime_prices_robust(symbols):
                         live_fx = float(q.get("regularMarketPrice", 0.0))
                         continue
 
-                    market_state = q.get("marketState", "")
-
-                    # [수정] PRE(프리장) 세션만 프리장 가격 적용, 애프터장(POST/POSTPOST)은 본장 종가(regularMarket)로 고정
-                    if market_state == "PRE" and "preMarketPrice" in q:
-                        price = q.get("preMarketPrice", 0.0)
-                        change_pct = q.get("preMarketChangePercent", 0.0)
-                    else:
-                        price = q.get("regularMarketPrice", 0.0)
-                        change_pct = q.get("regularMarketChangePercent", 0.0)
-
-                    result_map[symbol] = (float(price), float(change_pct))
+                    # 트레이딩뷰에서 값을 못 가져온 종목에 한해 야후 데이터 적용
+                    if symbol not in result_map or result_map[symbol][0] == 0.0:
+                        market_state = q.get("marketState", "")
+                        if market_state == "PRE" and "preMarketPrice" in q and q.get("preMarketPrice"):
+                            price = q.get("preMarketPrice", 0.0)
+                            change_pct = q.get("preMarketChangePercent", 0.0)
+                        else:
+                            price = q.get("regularMarketPrice", 0.0)
+                            change_pct = q.get("regularMarketChangePercent", 0.0)
+                        result_map[symbol] = (float(price), float(change_pct))
 
                 if result_map:
                     break

@@ -357,6 +357,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
+    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -403,7 +404,6 @@ def get_yahoo_realtime_prices_robust(symbols):
         f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols_param}",
     ]
 
-    # 1. 본장용 기존 v7 API 수집 시도
     for url in endpoints:
         try:
             resp = session.get(url, timeout=5)
@@ -417,16 +417,30 @@ def get_yahoo_realtime_prices_robust(symbols):
                         continue
 
                     market_state = q.get("marketState", "")
+                    reg_price = float(q.get("regularMarketPrice", 0.0))
+                    pre_price = float(q.get("preMarketPrice", 0.0))
 
-                    if market_state == "PRE" and "preMarketPrice" in q:
-                        price = q.get("preMarketPrice", 0.0)
-                        change_pct = q.get("preMarketChangePercent", 0.0)
+                    # 1) 프리장 상태이거나 preMarketPrice 데이터가 존재하는 경우
+                    if (market_state in ["PRE", "PREPRE"] or pre_price > 0) and pre_price > 0:
+                        price = pre_price
+                        if "preMarketChangePercent" in q and q["preMarketChangePercent"] is not None:
+                            raw_pct = float(q["preMarketChangePercent"])
+                            change_pct = raw_pct if abs(raw_pct) > 0.5 else raw_pct * 100
+                        elif reg_price > 0:
+                            change_pct = ((pre_price - reg_price) / reg_price) * 100
+                        else:
+                            change_pct = 0.0
+
+                    # 2) 애프터마켓 상태인 경우
                     elif market_state in ["POST", "POSTPOST"] and "postMarketPrice" in q:
-                        price = q.get("postMarketPrice", 0.0)
-                        change_pct = q.get("postMarketChangePercent", 0.0)
+                        price = float(q.get("postMarketPrice", 0.0))
+                        raw_pct = float(q.get("postMarketChangePercent", 0.0))
+                        change_pct = raw_pct if abs(raw_pct) > 0.5 else raw_pct * 100
+
+                    # 3) 정규장 및 기본값
                     else:
-                        price = q.get("regularMarketPrice", 0.0)
-                        change_pct = q.get("regularMarketChangePercent", 0.0)
+                        price = reg_price
+                        change_pct = float(q.get("regularMarketChangePercent", 0.0))
 
                     result_map[symbol] = (float(price), float(change_pct))
 
@@ -434,48 +448,6 @@ def get_yahoo_realtime_prices_robust(symbols):
                     break
         except Exception:
             pass
-
-    # 2. 프리장 수집 보완: v7 수집 실패 혹은 프리장 항목 누락 시 v8 Chart API를 통해 프리장 실시간 시세 수집
-    missing_or_pre_symbols = [
-        s for s in all_query_symbols 
-        if s != "USDKRW=X" and (s not in result_map or result_map[s][0] == 0.0)
-    ]
-    
-    # v7 결과가 존재하더라도 프리장 시세 체크를 위해 v8로 프리장 데이터 보완
-    if missing_or_pre_symbols or not result_map:
-        for symbol in all_query_symbols:
-            try:
-                v8_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d&includePrePost=true"
-                v8_resp = session.get(v8_url, timeout=3)
-                if v8_resp.status_code == 200:
-                    chart_result = v8_resp.json().get("chart", {}).get("result", [])
-                    if chart_result:
-                        meta = chart_result[0].get("meta", {})
-                        if symbol == "USDKRW=X":
-                            if live_fx == 0.0:
-                                live_fx = float(meta.get("regularMarketPrice", 0.0))
-                            continue
-
-                        trading_period = meta.get("currentTradingPeriod", {}).get("pre", {})
-                        prev_close = float(meta.get("previousClose", 0.0))
-                        reg_price = float(meta.get("regularMarketPrice", 0.0))
-
-                        quotes = [
-                            q for q in chart_result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                            if q is not None
-                        ]
-                        latest_price = quotes[-1] if quotes else reg_price
-
-                        # 프리장 시세 수집 적용 (v7이 실패했거나 v8의 프리장 가격이 존재하는 경우)
-                        if symbol not in result_map or result_map[symbol][0] == 0.0:
-                            change_pct = (
-                                ((latest_price - prev_close) / prev_close) * 100
-                                if prev_close > 0
-                                else 0.0
-                            )
-                            result_map[symbol] = (float(latest_price), float(change_pct))
-            except Exception:
-                pass
 
     if live_fx == 0.0:
         try:
@@ -1072,7 +1044,6 @@ if df_input is not None and not df_input.empty:
                 f"📋 **포트폴리오 변동 내역** \n- {new_msg} \n- {out_msg}"
             )
 
-        # [핵심 수정] 한국장 개장 중(09:00~15:30)이어도 미국 직전 장 종가 변동률 및 히트맵 색상이 그대로 유지되도록 0.0 덮어쓰기 로직 삭제
         display_base_df = result_df.copy()
 
         # =========================================================

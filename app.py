@@ -54,13 +54,6 @@ def get_market_session_status():
     is_dst = dst_start <= now_kst < dst_end
     premarket_start_val = (17 if is_dst else 18) * 60  # 17:00 / 18:00
 
-    # 주말 판별 (토요일 09:00 이후 ~ 월요일 17:00 전)
-    is_weekend_closed = (
-        (weekday == 5 and now_kst.hour >= 9)
-        or (weekday == 6)
-        or (weekday == 0 and current_time_val < premarket_start_val)
-    )
-
     # 평일 중 프리마켓 시작 전 대기시간 판별 (15:30 ~ 17:00/18:00)
     is_weekday_waiting = (
         (weekday < 5)
@@ -77,6 +70,9 @@ def get_market_session_status():
 
 
 def get_prev_business_day(ref_date):
+    if isinstance(ref_date, str):
+        ref_date = datetime.strptime(ref_date, "%Y-%m-%d")
+
     if ref_date.weekday() == 0:
         prev_day = ref_date - timedelta(days=3)
     elif ref_date.weekday() == 6:
@@ -89,38 +85,24 @@ def get_prev_business_day(ref_date):
 
 
 def get_timefolio_constituents_by_date(idx=2, date_str=None):
-    url = (
-        f"https://timeetf.co.kr/m11_view.php?idx={idx}&pdfDate={date_str}#constituentItems"
-        if date_str
-        else f"https://timeetf.co.kr/m11_view.php?idx={idx}#constituentItems"
-    )
-    headers = {"User-Agent": "Mozilla/5.0"}
+    """POST / GET 방식으로 타임폴리오 특정 날짜의 실제 PDF 구성종목을 크롤링합니다."""
+    url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": url,
+    }
     data = []
-    fetched_date = None
+    fetched_date = date_str
 
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        if date_str:
+            formatted_date_dot = date_str.replace("-", ".")
+            post_data = {"pdfDate": formatted_date_dot, "idx": str(idx)}
+            resp = requests.post(url, headers=headers, data=post_data, timeout=10)
+        else:
+            resp = requests.get(url, headers=headers, timeout=10)
+
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        date_input = (
-            soup.select_one("input[name='pdfDate']")
-            or soup.select_one("input#pdfDate")
-            or soup.select_one(".datepicker")
-            or soup.select_one("input[type='text']")
-        )
-        if date_input:
-            val = date_input.get("value", "") or date_input.get_text()
-            m = re.search(r"(\d{4})[.-/]\s*(\d{2})[.-/]\s*(\d{2})", val)
-            if m:
-                fetched_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-
-        if not fetched_date:
-            m_sec = re.search(
-                r"(\d{4})[.-/]\s*(\d{2})[.-/]\s*(\d{2})",
-                (soup.select_one("#constituentItems") or soup).get_text(),
-            )
-            if m_sec:
-                fetched_date = f"{m_sec.group(1)}-{m_sec.group(2)}-{m_sec.group(3)}"
 
         rows = soup.select("table tr")
         exclude_keywords = [
@@ -368,7 +350,7 @@ def get_timefolio_official_data(idx=2):
 
 
 def get_yahoo_realtime_prices_robust(symbols):
-    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 100% 실시간 주가 및 환율 수집"""
+    """세션 쿠키/Crumb 세션 수집으로 야후 403 차단을 우회하여 프리장/본장 실시간 주가 및 환율 수집 (애프터장 제외)"""
     clean_symbols = []
     for s in symbols:
         sym_str = str(s).split()[0].upper().replace("/", "-")
@@ -427,19 +409,18 @@ def get_yahoo_realtime_prices_robust(symbols):
                         live_fx = float(q.get("regularMarketPrice", 0.0))
                         continue
 
-                    market_state = q.get("marketState", "")
+                    market_state = str(q.get("marketState", "")).upper()
+                    pre_price = q.get("preMarketPrice")
 
-                    if market_state == "PRE" and "preMarketPrice" in q:
-                        price = q.get("preMarketPrice", 0.0)
-                        change_pct = q.get("preMarketChangePercent", 0.0)
-                    elif market_state in ["POST", "POSTPOST"] and "postMarketPrice" in q:
-                        price = q.get("postMarketPrice", 0.0)
-                        change_pct = q.get("postMarketChangePercent", 0.0)
+                    # [수정] PRE/PREPRE/EARLY 상태이거나 preMarketPrice 데이터가 정산된 경우 프리장 가격 적용
+                    if (market_state in ["PRE", "PREPRE", "EARLY"] or pre_price is not None) and pre_price is not None:
+                        price = float(pre_price)
+                        change_pct = float(q.get("preMarketChangePercent", 0.0) or 0.0)
                     else:
-                        price = q.get("regularMarketPrice", 0.0)
-                        change_pct = q.get("regularMarketChangePercent", 0.0)
+                        price = float(q.get("regularMarketPrice", 0.0) or 0.0)
+                        change_pct = float(q.get("regularMarketChangePercent", 0.0) or 0.0)
 
-                    result_map[symbol] = (float(price), float(change_pct))
+                    result_map[symbol] = (price, change_pct)
 
                 if result_map:
                     break
@@ -530,18 +511,31 @@ df_input, df_prev, current_pdf_date_str = None, None, ""
 
 if uploaded_file is None:
     with st.spinner("타임폴리오 웹사이트에서 구성종목 수집 중..."):
-        df_input, fetched_date = get_timefolio_constituents_by_date(idx=2)
-        if fetched_date:
-            current_pdf_date_str = fetched_date
-        else:
-            now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
-            current_pdf_date_str = now_kst_dt.strftime("%Y-%m-%d")
+        now_kst_dt = datetime.now(ZoneInfo("Asia/Seoul"))
+        target_date_candidate = now_kst_dt.strftime("%Y-%m-%d")
 
-        curr_dt = datetime.strptime(current_pdf_date_str, "%Y-%m-%d")
-        prev_pdf_date_str = get_prev_business_day(curr_dt)
+        for _ in range(5):
+            df_input, _ = get_timefolio_constituents_by_date(idx=2, date_str=target_date_candidate)
+            if df_input is not None and not df_input.empty:
+                current_pdf_date_str = target_date_candidate
+                break
+            target_date_candidate = get_prev_business_day(target_date_candidate)
+
+        if df_input is None or df_input.empty:
+            df_input, _ = get_timefolio_constituents_by_date(idx=2)
+            current_pdf_date_str = target_date_candidate
+
+        prev_pdf_date_str = get_prev_business_day(current_pdf_date_str)
         df_prev, _ = get_timefolio_constituents_by_date(
             idx=2, date_str=prev_pdf_date_str
         )
+
+        if df_prev is not None and not df_prev.empty and df_input is not None:
+            if df_input["비중"].tolist() == df_prev["비중"].tolist():
+                older_prev_date = get_prev_business_day(prev_pdf_date_str)
+                df_prev, _ = get_timefolio_constituents_by_date(
+                    idx=2, date_str=older_prev_date
+                )
 else:
     try:
         raw_df_in = pd.read_excel(uploaded_file)
@@ -690,7 +684,7 @@ if df_input is not None and not df_input.empty:
         official_base_fx = get_naver_official_base_fx()
         naver_market = get_naver_etf_market_data("426030")
         timefolio_data = get_timefolio_official_data(idx=2)
-        
+
         batch_results, live_fx = get_yahoo_realtime_prices_robust(ticker_list)
 
         if live_fx == 0.0 and official_base_fx > 0:
@@ -1029,8 +1023,6 @@ if df_input is not None and not df_input.empty:
             )
 
         display_base_df = result_df.copy()
-        if is_korean_market_hours:
-            display_base_df["주가변동률(%)"] = 0.0
 
         # =========================================================
         # 🔥 히트맵 (현금 항목 제외 및 하단 컬러바 제거 적용)
@@ -1070,8 +1062,6 @@ if df_input is not None and not df_input.empty:
         fig_treemap.update_traces(
             textposition="middle center", selector=dict(type="treemap")
         )
-        
-        # [수정] coloraxis_showscale=False 설정 및 하단 여백 제거로 히트맵 영역 극대화
         fig_treemap.update_layout(
             margin=dict(t=5, l=5, r=5, b=5),
             height=600,

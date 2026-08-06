@@ -410,14 +410,21 @@ def get_yahoo_realtime_prices_robust(symbols):
                         continue
 
                     market_state = str(q.get("marketState", "")).upper()
+                    reg_price = float(q.get("regularMarketPrice", 0.0) or 0.0)
                     pre_price = q.get("preMarketPrice")
 
-                    # [수정] PRE/PREPRE/EARLY 상태이거나 preMarketPrice 데이터가 정산된 경우 프리장 가격 적용
-                    if (market_state in ["PRE", "PREPRE", "EARLY"] or pre_price is not None) and pre_price is not None:
+                    # 프리장 세션(PRE, PREPRE, EARLY)이거나 preMarketPrice 데이터가 존재하는 경우
+                    is_premarket = market_state in ["PRE", "PREPRE", "EARLY"] or pre_price is not None
+
+                    if is_premarket and pre_price is not None and float(pre_price) > 0:
                         price = float(pre_price)
-                        change_pct = float(q.get("preMarketChangePercent", 0.0) or 0.0)
+                        # 🔥 전일 본장 종가(reg_price) 대비 프리장 가격(price)의 변동률 직접 연산
+                        if reg_price > 0:
+                            change_pct = ((price - reg_price) / reg_price) * 100.0
+                        else:
+                            change_pct = float(q.get("preMarketChangePercent", 0.0) or 0.0)
                     else:
-                        price = float(q.get("regularMarketPrice", 0.0) or 0.0)
+                        price = reg_price
                         change_pct = float(q.get("regularMarketChangePercent", 0.0) or 0.0)
 
                     result_map[symbol] = (price, change_pct)

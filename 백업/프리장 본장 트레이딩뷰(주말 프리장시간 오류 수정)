@@ -805,7 +805,7 @@ if df_input is not None and not df_input.empty:
       elif "NQU" in ticker or "NQ1!" in ticker or "NQ=" in ticker:
         qqq_price, qqq_change = batch_results.get("QQQ", (0.0, 0.0))
         live_data.append({
-            "종목코드": f"{ticker} (QQQ대체)",
+            "종목코드": "나스닥",
             "실시간 가격($)": qqq_price,
             "주가변동률(%)": qqq_change,
             "당일비중(%)": weight,
@@ -1109,10 +1109,13 @@ if df_input is not None and not df_input.empty:
       display_base_df["주가변동률(%)"] = 0.0
 
     # =========================================================
-    # 🔥 히트맵
+    # 🔥 히트맵 (현금 항목 제외 반영)
     # =========================================================
     st.markdown("---")
-    active_df = display_base_df[display_base_df["당일비중(%)"] > 0].copy()
+    active_df = display_base_df[
+        (display_base_df["당일비중(%)"] > 0)
+        & (display_base_df["종목코드"] != "현금")
+    ].copy()
     st.markdown(f"### 🔥 전체 구성종목 ({len(active_df)}개) 히트맵")
 
     active_df["표시명"] = (

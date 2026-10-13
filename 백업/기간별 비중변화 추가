@@ -1179,6 +1179,201 @@ if _fragment is None:
         return f
 
 
+# =========================================================
+# 📖 종목·티커 설명 팝업 (종목명은 타임폴리오 공식 구성종목 표 기준)
+# =========================================================
+_dialog = getattr(st, "dialog", None) or getattr(
+    st, "experimental_dialog", None
+)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_timefolio_name_map(date_str=None, idx=2):
+    """타임폴리오 구성종목 표에서 {티커: 종목명} 매핑만 추출 (기존 크롤링 함수와 별도).
+    실패/빈 결과는 예외로 처리해 캐시되지 않도록 함."""
+    url = f"https://timeetf.co.kr/m11_view.php?idx={idx}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": url,
+    }
+
+    if date_str:
+        post_data = {
+            "pdfDate": date_str.replace("-", "."),
+            "idx": str(idx),
+        }
+        resp = requests.post(
+            url,
+            headers=headers,
+            data=post_data,
+            timeout=10,
+        )
+    else:
+        resp = requests.get(url, headers=headers, timeout=10)
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    exclude_keywords = [
+        "기준가",
+        "비교지수",
+        "초과성과",
+        "종목",
+        "총액",
+        "합계",
+        "TOTAL",
+        "CODE",
+        "DATE",
+        "날짜",
+        "일자",
+    ]
+
+    name_map = {}
+
+    for row in soup.select("table tr"):
+        tds = row.select("td")
+
+        if len(tds) < 4:
+            continue
+
+        cols = [td.get_text().strip() for td in tds]
+        raw_code, raw_name, raw_weight = cols[0], cols[1], cols[-1]
+
+        try:
+            w_val = float(
+                raw_weight.replace("%", "").replace(",", "").strip()
+            )
+        except ValueError:
+            continue
+
+        if not (0 < w_val <= 100):
+            continue
+
+        if any(
+            kw in raw_code or kw in raw_name
+            for kw in exclude_keywords
+        ):
+            continue
+
+        upper_name = raw_name.upper()
+
+        if (
+            "현금" in raw_name
+            or "예금" in raw_name
+            or "CASH" in upper_name
+            or "KRW" in upper_name
+        ):
+            name_map.setdefault("현금", raw_name or "현금")
+            continue
+
+        if not raw_code.split():
+            continue
+
+        key = normalize_compare_ticker(raw_code)
+
+        if key and raw_name:
+            name_map.setdefault(key, raw_name)
+
+    if not name_map:
+        raise ValueError("name map not found")
+
+    return name_map
+
+
+def resolve_name_map(date_candidates, needed_tickers):
+    """필요한 티커의 종목명을 모두 찾을 때까지 여러 날짜의 구성종목 표를 합쳐서 조회"""
+    found = {}
+
+    for d in date_candidates:
+        if all(t in found for t in needed_tickers):
+            break
+
+        try:
+            m = get_timefolio_name_map(d)
+
+            for k, v in m.items():
+                found.setdefault(k, v)
+
+        except Exception:
+            pass
+
+    return found
+
+
+def build_ticker_name_table(tickers, name_map, tags=None):
+    rows = []
+
+    for t in tickers:
+        row = {
+            "티커": t,
+            "종목명": name_map.get(t, "-"),
+        }
+
+        if tags is not None:
+            row["구분"] = tags.get(t, "")
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    df.index = range(1, len(df) + 1)
+
+    return df
+
+
+def show_ticker_popup(title, df):
+    """팝업(dialog)으로 표시. 지원되지 않는 환경이면 펼침 영역(expander)으로 대체"""
+
+    def _body():
+        st.dataframe(
+            df.style.set_properties(**{"text-align": "center"}),
+            use_container_width=True,
+            height=min(35 * (len(df) + 1) + 3, 480),
+        )
+
+        st.caption(
+            "※ 종목명은 타임폴리오 공식 구성종목 표 기준입니다. "
+            "'나스닥'은 나스닥100 선물이며, 월물이 바뀌어도 "
+            "QQQ 시세로 대체해 반영합니다."
+        )
+
+    try:
+        if _dialog is None:
+            raise RuntimeError("dialog not supported")
+
+        try:
+            _dialog(title, width="large")(_body)()
+        except TypeError:
+            _dialog(title)(_body)()
+
+    except Exception:
+        with st.expander(title, expanded=True):
+            _body()
+
+
+@_fragment
+def render_change_popup_button(tickers, base_date_str):
+    """전일 대비 비중 변화 TOP10 표의 종목·티커 설명 팝업 버튼"""
+    try:
+        if st.button(
+            "📖 표에 나온 종목·티커 설명 보기",
+            key="popup_change_btn",
+        ):
+            prev1 = get_prev_business_day(base_date_str)
+            prev2 = get_prev_business_day(prev1)
+
+            names = resolve_name_map(
+                [None, base_date_str, prev1, prev2],
+                tickers,
+            )
+
+            show_ticker_popup(
+                "전일 대비 비중 변화 TOP 10 – 종목·티커",
+                build_ticker_name_table(tickers, names),
+            )
+
+    except Exception as e:
+        st.warning(f"종목 설명을 표시하는 중 문제가 발생했습니다: {e}")
+
+
 @_fragment
 def render_period_compare(today_rows, base_date_str, ref_weights):
     """기간 선택 버튼 → 해당 기간 TOP10과 오늘 TOP10 비교 (이 영역만 다시 실행됨)"""
@@ -1287,6 +1482,44 @@ def render_period_compare(today_rows, base_date_str, ref_weights):
                 ),
                 use_container_width=True,
                 height=385,
+            )
+
+        # 표에 포함된 종목·티커 설명 팝업
+        today_tickers = [t for t, _ in today_rows]
+        past_tickers = right_df["종목코드"].tolist()
+
+        popup_tickers = []
+        popup_tags = {}
+
+        for t in today_tickers + past_tickers:
+            if t not in popup_tickers:
+                popup_tickers.append(t)
+
+            in_today = t in today_tickers
+            in_past = t in past_tickers
+
+            popup_tags[t] = (
+                "오늘 · 기준시점"
+                if (in_today and in_past)
+                else ("오늘만" if in_today else "기준시점만")
+            )
+
+        if st.button(
+            "📖 표에 나온 종목·티커 설명 보기",
+            key="popup_period_btn",
+        ):
+            names = resolve_name_map(
+                [None, base_date_str, snap_date],
+                popup_tickers,
+            )
+
+            show_ticker_popup(
+                f"{choice} 비교 TOP 10 – 종목·티커",
+                build_ticker_name_table(
+                    popup_tickers,
+                    names,
+                    popup_tags,
+                ),
             )
 
     except Exception as e:
@@ -2806,6 +3039,17 @@ if df_input is not None and not df_input.empty:
             ),
             use_container_width=True,
             height=385,
+        )
+
+        render_change_popup_button(
+            display_top10["종목코드"].tolist(),
+            (
+                current_pdf_date_str
+                if current_pdf_date_str
+                else datetime.now(
+                    ZoneInfo("Asia/Seoul")
+                ).strftime("%Y-%m-%d")
+            ),
         )
 
         # =========================================================

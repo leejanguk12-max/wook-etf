@@ -1107,6 +1107,192 @@ def color_weight_change(val):
     return ""
 
 
+# =========================================================
+# 📅 TOP 10 기간별 비중 비교 (1개월/3개월/6개월/1년 전)
+# =========================================================
+PERIOD_OPTIONS = {
+    "1개월 전": 1,
+    "3개월 전": 3,
+    "6개월 전": 6,
+    "1년 전": 12,
+}
+
+
+def normalize_compare_ticker(code):
+    """기간 비교용 티커 정규화 (나스닥 선물은 월물 무관하게 '나스닥'으로 통일)"""
+    s = str(code).strip()
+
+    if is_nasdaq_future(s):
+        return "나스닥"
+
+    up = s.split()[0].upper() if s.split() else ""
+
+    if up in ("KRW", "CASH") or "현금" in s:
+        return "현금"
+
+    return up
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_period_snapshot(target_date_str, ref_weights, idx=2, max_back=5):
+    """목표 날짜의 구성종목 스냅샷. 휴일/주말이면 직전 영업일로 보정.
+    실패 시 예외를 발생시켜 실패 결과가 캐시되지 않도록 함."""
+    d = datetime.strptime(target_date_str, "%Y-%m-%d")
+
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+
+    cand = d.strftime("%Y-%m-%d")
+
+    for _ in range(max_back):
+        df, _d = get_timefolio_constituents_by_date(
+            idx=idx,
+            date_str=cand,
+        )
+
+        if df is not None and not df.empty:
+            # 사이트가 해당 날짜 데이터가 없을 때 최신 데이터를 돌려주는 경우 방지
+            if tuple(df["비중"].tolist()) != tuple(ref_weights):
+                return df, cand
+
+        cand = get_prev_business_day(cand)
+
+    raise ValueError("snapshot not found")
+
+
+def style_map_compat(df, func, subset):
+    sty = df.style
+
+    if hasattr(sty, "map"):
+        return sty.map(func, subset=subset)
+
+    return sty.applymap(func, subset=subset)
+
+
+_fragment = getattr(st, "fragment", None) or getattr(
+    st, "experimental_fragment", None
+)
+
+if _fragment is None:
+
+    def _fragment(f):
+        return f
+
+
+@_fragment
+def render_period_compare(today_rows, base_date_str, ref_weights):
+    """기간 선택 버튼 → 해당 기간 TOP10과 오늘 TOP10 비교 (이 영역만 다시 실행됨)"""
+    try:
+        choice = st.radio(
+            "비교할 기간을 선택하세요",
+            list(PERIOD_OPTIONS.keys()),
+            horizontal=True,
+            key="period_compare_choice",
+        )
+
+        months = PERIOD_OPTIONS[choice]
+
+        target_date = (
+            pd.Timestamp(base_date_str)
+            - pd.DateOffset(months=months)
+        ).strftime("%Y-%m-%d")
+
+        try:
+            with st.spinner(f"{choice} 구성종목 불러오는 중..."):
+                snap_df, snap_date = get_period_snapshot(
+                    target_date,
+                    tuple(ref_weights),
+                )
+        except Exception:
+            st.warning(
+                f"⚠️ {choice}({target_date} 부근) 구성종목 데이터를 "
+                f"가져오지 못했습니다. 잠시 후 다시 시도해주세요."
+            )
+            return
+
+        past = snap_df.copy()
+        past["티커"] = past["종목코드"].map(normalize_compare_ticker)
+        past = past[past["티커"] != "현금"]
+
+        past = (
+            past.groupby("티커", as_index=False)["비중"]
+            .sum()
+            .sort_values(by="비중", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        past_map = dict(zip(past["티커"], past["비중"]))
+
+        # 왼쪽: 오늘 TOP10 (기준 시점 대비 증감)
+        left_rows = []
+
+        for t_name, t_weight in today_rows:
+            if t_name in past_map:
+                diff = t_weight - past_map[t_name]
+                diff_str = f"{diff:+.2f}%"
+            else:
+                diff_str = "✨ NEW"
+
+            left_rows.append(
+                {
+                    "종목코드": t_name,
+                    "비중": f"{t_weight:.2f}%",
+                    "증감": diff_str,
+                }
+            )
+
+        left_df = pd.DataFrame(left_rows)
+        left_df.index = range(1, len(left_df) + 1)
+
+        # 오른쪽: 기준 시점 TOP10
+        right_df = past.head(10).copy()
+        right_df = pd.DataFrame(
+            {
+                "종목코드": right_df["티커"],
+                "비중": right_df["비중"].map("{:.2f}%".format),
+            }
+        )
+        right_df.index = range(1, len(right_df) + 1)
+
+        note = ""
+
+        if snap_date != target_date:
+            note = " (해당일 데이터가 없어 직전 영업일 기준)"
+
+        st.caption(
+            f"오늘({base_date_str}) vs {choice} 기준일({snap_date}){note}"
+        )
+
+        col_l, col_r = st.columns(2)
+
+        with col_l:
+            st.markdown("**📌 오늘 TOP 10** (기준 시점 대비 증감)")
+
+            st.dataframe(
+                style_map_compat(
+                    left_df,
+                    color_weight_change,
+                    ["증감"],
+                ).set_properties(**{"text-align": "center"}),
+                use_container_width=True,
+                height=385,
+            )
+
+        with col_r:
+            st.markdown(f"**🕰️ {choice} TOP 10** ({snap_date})")
+
+            st.dataframe(
+                right_df.style.set_properties(
+                    **{"text-align": "center"}
+                ),
+                use_container_width=True,
+                height=385,
+            )
+
+    except Exception as e:
+        st.warning(f"기간별 비교를 표시하는 중 문제가 발생했습니다: {e}")
+
+
 st.markdown(
     "### 🌐 구성종목 가져오기 방식을 선택하세요"
 )
@@ -2620,6 +2806,63 @@ if df_input is not None and not df_input.empty:
             ),
             use_container_width=True,
             height=385,
+        )
+
+        # =========================================================
+        # 📅 TOP 10 기간별 비중 비교
+        # =========================================================
+
+        st.markdown("---")
+
+        st.markdown(
+            "### 📅 TOP 10 기간별 비중 비교"
+        )
+
+        period_today_df = (
+            display_base_df[
+                (
+                    display_base_df[
+                        "당일비중(%)"
+                    ] > 0
+                )
+                &
+                (
+                    display_base_df[
+                        "종목코드"
+                    ] != "현금"
+                )
+            ]
+            .sort_values(
+                by="당일비중(%)",
+                ascending=False,
+            )
+            .head(10)
+        )
+
+        period_today_rows = [
+            (
+                str(r["종목코드"]),
+                float(r["당일비중(%)"]),
+            )
+            for _, r in period_today_df.iterrows()
+        ]
+
+        period_base_date = (
+            current_pdf_date_str
+            if current_pdf_date_str
+            else datetime.now(
+                ZoneInfo("Asia/Seoul")
+            ).strftime("%Y-%m-%d")
+        )
+
+        render_period_compare(
+            period_today_rows,
+            period_base_date,
+            tuple(
+                df_input[
+                    "비중"
+                ].tolist()
+            ),
         )
 
         # =========================================================
